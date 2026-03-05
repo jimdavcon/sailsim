@@ -11,26 +11,28 @@ const wingAngleLabel = document.getElementById('wingAngleLabel');
 const speedGauge = document.getElementById('speedGauge');
 const headingGauge = document.getElementById('headingGauge');
 
-// Physical parameters
-const m = 200;          // mass [kg]
-const Iz = 150;         // yaw inertia [kg m^2]
+// Physical parameters for 6 ft, 20 lb hull
+const m = 9.1;          // mass [kg] (20 lb)
+const Iz = 2.5;         // yaw inertia [kg m^2] (approx for 1.83 m hull)
 const rhoAir = 1.225;   // air density [kg/m^3]
 const rhoWater = 1025;  // water density [kg/m^3]
 
-// Hull / hydrodynamics
-const Ax = 2;           // projected area in surge [m^2]
-const Ay = 4;           // projected area in sway [m^2]
+// Hull / hydrodynamics for slender airfoil-like hull
+const Ax = 0.02;        // surge projected area [m^2]
+const Ay = 0.25;        // sway projected area [m^2]
 const Cdx = 0.8;        // surge drag coefficient
 const Cdy = 1.2;        // sway drag coefficient
-const Cr = 50;          // yaw damping coefficient
+const Cr  = 5.0;        // yaw damping coefficient (lighter boat)
 
-// Wing parameters (vertical symmetric airfoil)
-const Aw = 6.0;               // wing area [m^2]
+// Wing parameters (6 ft tall, 1 ft chord)
+const Aw = 0.56;              // wing area [m^2] (1.83 m * 0.305 m)
 const CLalpha = 2 * Math.PI;  // lift slope [per rad]
 const CLmax = 1.2;            // stall limit
 const CD0 = 0.02;             // profile drag
 const k_induced = 0.08;       // induced drag factor
-const leverWing = 1.5;        // moment arm [m] from CG along +x
+
+// Mast at CG: no direct moment arm from wing force
+const leverWing = 0.0;        // [m] (set ~0.1 if you want some direct yaw)
 
 // Time step
 const dt = 0.02;        // [s]
@@ -39,9 +41,9 @@ const dt = 0.02;        // [s]
 let x = canvas.width / 2;
 let y = canvas.height / 2;
 let psi = 0;            // heading [rad]
-let u = 0.1;            // small initial surge [m/s] to avoid deadlock
-let v = 0;
-let r = 0;
+let u = 0.0;            // surge [m/s]
+let v = 0.0;            // sway [m/s]
+let r = 0.0;            // yaw rate [rad/s]
 
 // Environment / controls
 let windSpeed = parseFloat(windSpeedSlider.value); // [m/s]
@@ -136,7 +138,7 @@ function step() {
   const F_wing_x = L * liftDirX + D * dragDirX;
   const F_wing_y = L * liftDirY + D * dragDirY;
 
-  // Wing moment about CG
+  // Wing moment about CG (mast at CG → leverWing = 0)
   const M_wing_z = leverWing * F_wing_y;
 
   // --- Hydrodynamic drag (hull/keel) ---
@@ -283,12 +285,12 @@ function drawBoat() {
   ctx.translate(x, y);
   ctx.rotate(psi);
 
-  // Hull
+  // Hull (6 ft ~ 1.83 m, just a visual cue)
   ctx.fillStyle = '#444';
   ctx.beginPath();
-  ctx.moveTo(20, 0);
-  ctx.lineTo(-20, -8);
-  ctx.lineTo(-20, 8);
+  ctx.moveTo(30, 0);   // bow
+  ctx.lineTo(-30, -6); // stern upper
+  ctx.lineTo(-30, 6);  // stern lower
   ctx.closePath();
   ctx.fill();
 

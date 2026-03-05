@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>2D Wing-Driven Boat Simulation</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 8px; }
+    canvas { border: 1px solid #444; background: #cceeff; display: block; }
+    #hud {
+      margin-top: 8px;
+      display: flex;
+      gap: 24px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    #controls {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .gauge {
+      min-width: 140px;
+    }
+    .label {
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="simCanvas" width="800" height="600"></canvas>
+
+  <div id="hud">
+    <div id="controls">
+      <div>
+        <span class="label">Wind speed:</span>
+        <input id="windSpeed" type="range" min="0" max="20" value="10" step="0.5">
+        <span id="windSpeedLabel">10.0 m/s</span>
+      </div>
+      <div>
+        <span class="label">Wind direction:</span>
+        <input id="windDir" type="range" min="0" max="360" value="120">
+        <span id="windDirLabel">120° (from)</span>
+      </div>
+      <div>
+        <span class="label">Wing angle:</span>
+        <input id="wingAngle" type="range" min="-45" max="45" value="0">
+        <span id="wingAngleLabel">0°</span>
+      </div>
+    </div>
+
+    <div class="gauge">
+      <div class="label">Speed (m/s)</div>
+      <div id="speedGauge">0.00</div>
+    </div>
+    <div class="gauge">
+      <div class="label">Heading (deg)</div>
+      <div id="headingGauge">0.0</div>
+    </div>
+  </div>
+
+  <script src="sim.js"></script>
+</body>
+</html>

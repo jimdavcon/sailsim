@@ -45,14 +45,18 @@ let u = 0;
 let v = 0;
 let r = 0;
 
-// Environment
-let windSpeed = parseFloat(windSpeedSlider.value);
-let windDir = parseFloat(windDirSlider.value) * Math.PI / 180;
-let wingAngle = 0;
+// Environment defaults
+let windSpeed = 0;
+let windDir = 0;
+let wingAngle = -Math.PI / 2;   // -90°
 
-windSpeedLabel.textContent = windSpeed.toFixed(1) + ' m/s';
-windDirLabel.textContent = windDirSlider.value + '° (from)';
-wingAngleLabel.textContent = wingAngleSlider.value + '°';
+windSpeedLabel.textContent = "0.0 m/s";
+windDirLabel.textContent = "0° (from)";
+wingAngleLabel.textContent = "-90°";
+
+windSpeedSlider.value = 0;
+windDirSlider.value = 0;
+wingAngleSlider.value = -90;
 
 windSpeedSlider.oninput = () => {
   windSpeed = parseFloat(windSpeedSlider.value);
@@ -246,14 +250,15 @@ function drawBoat() {
   ctx.closePath();
   ctx.fill();
 
-  // Wing
+  // Wing centered on mast
   ctx.save();
   ctx.rotate(wingAngle);
   ctx.fillStyle = '#ffffff';
   ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(0, -40);
-  ctx.lineTo(5, -40);
+  ctx.moveTo(-2.5, -20);
+  ctx.lineTo( 2.5, -20);
+  ctx.lineTo( 2.5,  20);
+  ctx.lineTo(-2.5,  20);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -264,72 +269,4 @@ function drawBoat() {
 function drawForceVector() {
   const scale = 0.2; // pixels per Newton
   const endX = x + Fwx * scale;
-  const endY = y + Fwy * scale;
-
-  ctx.save();
-  ctx.strokeStyle = '#00aa00';
-  ctx.fillStyle = '#00aa00';
-  ctx.lineWidth = 3;
-
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(endX, endY);
-  ctx.stroke();
-
-  const angle = Math.atan2(endY - y, endX - x);
-  const ah = 10;
-  ctx.beginPath();
-  ctx.moveTo(endX, endY);
-  ctx.lineTo(endX - ah * Math.cos(angle - Math.PI / 6),
-             endY - ah * Math.sin(angle - Math.PI / 6));
-  ctx.lineTo(endX - ah * Math.cos(angle + Math.PI / 6),
-             endY - ah * Math.sin(angle + Math.PI / 6));
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.restore();
-}
-
-function drawWindVector() {
-  const originX = 60, originY = 60, scale = 5;
-  const Vwx = windSpeed * Math.cos(windDir + Math.PI);
-  const Vwy = windSpeed * Math.sin(windDir + Math.PI);
-  const endX = originX + Vwx * scale;
-  const endY = originY + Vwy * scale;
-
-  ctx.save();
-  ctx.strokeStyle = '#ff0000';
-  ctx.fillStyle = '#ff0000';
-  ctx.lineWidth = 2;
-
-  ctx.beginPath();
-  ctx.moveTo(originX, originY);
-  ctx.lineTo(endX, endY);
-  ctx.stroke();
-
-  const angle = Math.atan2(endY - originY, endX - originX);
-  const ah = 8;
-  ctx.beginPath();
-  ctx.moveTo(endX, endY);
-  ctx.lineTo(endX - ah * Math.cos(angle - Math.PI / 6),
-             endY - ah * Math.sin(angle - Math.PI / 6));
-  ctx.lineTo(endX - ah * Math.cos(angle + Math.PI / 6),
-             endY - ah * Math.sin(angle + Math.PI / 6));
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.restore();
-}
-
-function render() {
-  step();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawGrid();
-  drawTrail();
-  drawBoat();
-  drawForceVector();
-  drawWindVector();
-  requestAnimationFrame(render);
-}
-
-render();
+  const endY = y + Fwy * scale

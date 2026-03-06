@@ -87,15 +87,19 @@ function wrapAngle(a) {
 }
 
 function step() {
+  // World-frame velocity
   const vx = u * Math.cos(psi) - v * Math.sin(psi);
   const vy = u * Math.sin(psi) + v * Math.cos(psi);
 
+  // Wind: windDir is direction wind is coming FROM
   const Vwx = windSpeed * Math.cos(windDir + Math.PI);
   const Vwy = windSpeed * Math.sin(windDir + Math.PI);
 
+  // Apparent wind in world frame
   const Vax = Vwx - vx;
   const Vay = Vwy - vy;
 
+  // Apparent wind in body frame
   const cosPsi = Math.cos(psi);
   const sinPsi = Math.sin(psi);
   const Vabx =  cosPsi * Vax + sinPsi * Vay;
@@ -104,42 +108,60 @@ function step() {
   const Va = Math.hypot(Vabx, Vaby) || 1e-6;
   const betaA = Math.atan2(Vaby, Vabx);
 
+  // Wing AoA
   const alpha = betaA - wingAngle;
 
+  // Lift coefficient with stall
   let CL = CLalpha * alpha;
   if (CL > CLmax) CL = CLmax;
   if (CL < -CLmax) CL = -CLmax;
 
+  // Drag coefficient
   const CD = CD0 + k_induced * CL * CL;
 
+  // Dynamic pressure
   const q = 0.5 * rhoAir * Va * Va;
 
+  // Lift and drag magnitudes
   const L = q * Aw * CL;
   const D = q * Aw * CD;
 
-  const liftDirX = -Math.sin(betaA);
-  const liftDirY =  Math.cos(betaA);
+  // Apparent wind unit vector in body frame
+  const awx = Vabx / Va;
+  const awy = Vaby / Va;
 
-  const dragDirX = -Math.cos(betaA);
-  const dragDirY = -Math.sin(betaA);
+  // Drag direction = opposite apparent wind
+  const dragDirX = -awx;
+  const dragDirY = -awy;
 
+  // Lift direction = perpendicular to drag
+  const liftDirX = -dragDirY;
+  const liftDirY =  dragDirX;
+
+  // Total wing forces in body frame
   const F_wing_x = L * liftDirX + D * dragDirX;
   const F_wing_y = L * liftDirY + D * dragDirY;
 
+  // Wing moment about CG
   const M_wing_z = leverWing * F_wing_y;
 
+  // Hull drag
   const Fdx = -0.5 * rhoWater * Cdx * Ax * Math.abs(u) * u;
   const Fdy = -0.5 * rhoWater * Cdy * Ay * Math.abs(v) * v;
 
+  // Yaw damping
   const Md = -Cr * r * Math.abs(r);
 
+  // Total forces and moment in body frame
   const Fx = F_wing_x + Fdx;
   const Fy = F_wing_y + Fdy;
   const Mz = M_wing_z + Md;
 
+  // Total force in world frame (for drawing)
   Fwx = Fx * Math.cos(psi) - Fy * Math.sin(psi);
   Fwy = Fx * Math.sin(psi) + Fy * Math.cos(psi);
 
+  // Integrate
   const du = Fx / m;
   const dv = Fy / m;
   const dr = Mz / Iz;
@@ -152,15 +174,18 @@ function step() {
   x += (u * Math.cos(psi) - v * Math.sin(psi)) * dt;
   y += (u * Math.sin(psi) + v * Math.cos(psi)) * dt;
 
+  // Wrap world
   if (x < 0) x += canvas.width;
   if (x > canvas.width) x -= canvas.width;
   if (y < 0) y += canvas.height;
   if (y > canvas.height) y -= canvas.height;
 
+  // Gauges
   const speed = Math.hypot(u, v);
   speedGauge.textContent = speed.toFixed(2);
   headingGauge.textContent = (psi * 180 / Math.PI).toFixed(1);
 
+  // Trail
   trailTimer += dt;
   if (trailTimer >= 1.0) {
     trailTimer = 0;
@@ -212,6 +237,7 @@ function drawBoat() {
   ctx.translate(x, y);
   ctx.rotate(psi);
 
+  // Hull
   ctx.fillStyle = '#444';
   ctx.beginPath();
   ctx.moveTo(30, 0);
@@ -220,6 +246,7 @@ function drawBoat() {
   ctx.closePath();
   ctx.fill();
 
+  // Wing
   ctx.save();
   ctx.rotate(wingAngle);
   ctx.fillStyle = '#ffffff';
@@ -235,7 +262,7 @@ function drawBoat() {
 }
 
 function drawForceVector() {
-  const scale = 0.2;
+  const scale = 0.2; // pixels per Newton
   const endX = x + Fwx * scale;
   const endY = y + Fwy * scale;
 

@@ -17,12 +17,8 @@ const Iz = 2.5;         // yaw inertia [kg m^2]
 const rhoAir = 1.225;   // air density [kg/m^3]
 const rhoWater = 1025;  // water density [kg/m^3]
 
-// Hull hydrodynamics (airfoil-like hull)
-const Ax = 0.02;        // surge projected area [m^2]
-const Ay = 0.25;        // sway projected area [m^2]
-const Cdx = 0.8;
-const Cdy = 1.2;
-const Cr  = 5.0;        // yaw damping
+// Hull hydrodynamics (now lift+drag like wing, in water)
+const Ah = 0.25;        // reference area for hull [m^2] (side/planform)
 
 // Wing parameters (6 ft × 1 ft)
 const Aw = 0.56;              // wing area [m^2]
@@ -30,6 +26,9 @@ const CLalpha = 2 * Math.PI;  // lift slope
 const CLmax = 1.2;            // stall limit
 const CD0 = 0.02;             // profile drag
 const k_induced = 0.08;       // induced drag
+
+// Yaw damping (still a simple hydrodynamic moment term)
+const Cr  = 5.0;
 
 // Mast at CG → no direct moment arm
 const leverWing = 0.0;
@@ -58,6 +57,20 @@ windSpeedSlider.value = 0;
 windDirSlider.value = 0;
 wingAngleSlider.value = -90;
 
+// Debug values (wing)
+let debugAlpha = 0;
+let debugLift = 0;
+let debugDrag = 0;
+
+// Trail
+const trail = [];
+let trailTimer = 0;
+const TRAIL_LENGTH = 30;
+
+// Total force in world frame (for drawing)
+let Fwx = 0;
+let Fwy = 0;
+
 windSpeedSlider.oninput = () => {
   windSpeed = parseFloat(windSpeedSlider.value);
   windSpeedLabel.textContent = windSpeed.toFixed(1) + ' m/s';
@@ -74,15 +87,6 @@ wingAngleSlider.oninput = () => {
   wingAngle = deg * Math.PI / 180;
   wingAngleLabel.textContent = deg.toFixed(0) + '°';
 };
-
-// Trail
-const trail = [];
-let trailTimer = 0;
-const TRAIL_LENGTH = 30;
-
-// Total force in world frame (for drawing)
-let Fwx = 0;
-let Fwy = 0;
 
 function wrapAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
@@ -112,53 +116,76 @@ function step() {
   const Va = Math.hypot(Vabx, Vaby) || 1e-6;
   const betaA = Math.atan2(Vaby, Vabx);
 
-  // Wing AoA
+  // --- Wing aerodynamics ---
   const alpha = betaA - wingAngle;
 
-  // Lift coefficient with stall
   let CL = CLalpha * alpha;
   if (CL > CLmax) CL = CLmax;
   if (CL < -CLmax) CL = -CLmax;
 
-  // Drag coefficient
   const CD = CD0 + k_induced * CL * CL;
 
-  // Dynamic pressure
   const q = 0.5 * rhoAir * Va * Va;
 
-  // Lift and drag magnitudes
   const L = q * Aw * CL;
   const D = q * Aw * CD;
 
-  // Apparent wind unit vector in body frame
   const awx = Vabx / Va;
   const awy = Vaby / Va;
 
-  // Drag direction = opposite apparent wind
   const dragDirX = -awx;
   const dragDirY = -awy;
 
-  // Lift direction = perpendicular to drag
   const liftDirX = -dragDirY;
   const liftDirY =  dragDirX;
 
-  // Total wing forces in body frame
   const F_wing_x = L * liftDirX + D * dragDirX;
   const F_wing_y = L * liftDirY + D * dragDirY;
 
-  // Wing moment about CG
   const M_wing_z = leverWing * F_wing_y;
 
-  // Hull drag
-  const Fdx = -0.5 * rhoWater * Cdx * Ax * Math.abs(u) * u;
-  const Fdy = -0.5 * rhoWater * Cdy * Ay * Math.abs(v) * v;
+  // Store debug values for display
+  debugAlpha = alpha;
+  debugLift = L;
+  debugDrag = D;
 
-  // Yaw damping
+  // --- Hull hydrodynamics (lift + drag in water) ---
+  // Water is stationary in world frame, so hull velocity relative to water in body frame is just (u, v)
+  const Vh = Math.hypot(u, v) || 1e-6;
+  const betaH = Math.atan2(v, u);   // direction of hull motion in body frame
+
+  // Hull AoA relative to its x-axis
+  const alphaH = betaH;             // hull "wing" aligned with x-axis
+
+  let CLh = CLalpha * alphaH;
+  if (CLh > CLmax) CLh = CLmax;
+  if (CLh < -CLmax) CLh = -CLmax;
+
+  const CDh = CD0 + k_induced * CLh * CLh;
+
+  const qh = 0.5 * rhoWater * Vh * Vh;
+
+  const Lh = qh * Ah * CLh;
+  const Dh = qh * Ah * CDh;
+
+  const hwx = u / Vh;
+  const hwy = v / Vh;
+
+  const dragHDirX = -hwx;
+  const dragHDirY = -hwy;
+
+  const liftHDirX = -dragHDirY;
+  const liftHDirY =  dragHDirX;
+
+  const F_hull_x = Lh * liftHDirX + Dh * dragHDirX;
+  const F_hull_y = Lh * liftHDirY + Dh * dragHDirY;
+
+  // Hull hydrodynamic moment (still just yaw damping)
   const Md = -Cr * r * Math.abs(r);
 
-  // Total forces and moment in body frame
-  const Fx = F_wing_x + Fdx;
-  const Fy = F_wing_y + Fdy;
+  // --- Total forces and moment in body frame ---
+  const Fx = F_wing_x + F_hull_x;
+  const Fy = F_wing_y + F_hull_y;
   const Mz = M_wing_z + Md;
 
   // Total force in world frame (for drawing)
@@ -198,9 +225,21 @@ function step() {
   }
 }
 
-function speedToColor(speed, maxSpeed) {
-  const t = Math.min(speed / maxSpeed, 1);
-  return `rgb(${Math.floor(255 * t)},0,0)`;
+function drawDebugText() {
+  ctx.save();
+  ctx.font = '14px monospace';
+
+  const stallAoA = CLmax / CLalpha;
+  const aoaColor = Math.abs(debugAlpha) > Math.abs(stallAoA) ? '#cc0000' : '#009900';
+
+  ctx.fillStyle = aoaColor;
+  ctx.fillText(`AoA: ${(debugAlpha * 180/Math.PI).toFixed(1)} deg`, 10, canvas.height - 60);
+
+  ctx.fillStyle = '#000';
+  ctx.fillText(`Lift: ${debugLift.toFixed(2)} N`, 10, canvas.height - 40);
+  ctx.fillText(`Drag: ${debugDrag.toFixed(2)} N`, 10, canvas.height - 20);
+
+  ctx.restore();
 }
 
 function drawGrid() {
@@ -236,37 +275,112 @@ function drawTrail() {
   ctx.restore();
 }
 
+function speedToColor(speed, maxSpeed) {
+  const t = Math.min(speed / maxSpeed, 1);
+  return `rgb(${Math.floor(255 * t)},0,0)`;
+}
+
 function drawBoat() {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(psi);
 
-  // Hull
+  // Hull: symmetric airfoil shape (pointy at both ends)
   ctx.fillStyle = '#444';
   ctx.beginPath();
-  ctx.moveTo(30, 0);
-  ctx.lineTo(-30, -6);
-  ctx.lineTo(-30, 6);
+  ctx.moveTo(30, 0);     // front point
+  ctx.lineTo(0, -8);     // upper mid
+  ctx.lineTo(-30, 0);    // rear point
+  ctx.lineTo(0, 8);      // lower mid
   ctx.closePath();
   ctx.fill();
 
-  // Wing centered on mast
+  // Wing: centered on mast, pointy leading edge
   ctx.save();
   ctx.rotate(wingAngle);
+
   ctx.fillStyle = '#ffffff';
   ctx.beginPath();
-  ctx.moveTo(-2.5, -20);
-  ctx.lineTo( 2.5, -20);
-  ctx.lineTo( 2.5,  20);
-  ctx.lineTo(-2.5,  20);
+  ctx.moveTo(0, -25);    // leading edge point
+  ctx.lineTo(5, 25);     // trailing edge lower
+  ctx.lineTo(-5, 25);    // trailing edge upper
   ctx.closePath();
   ctx.fill();
-  ctx.restore();
 
+  ctx.restore();
   ctx.restore();
 }
 
 function drawForceVector() {
   const scale = 0.2; // pixels per Newton
   const endX = x + Fwx * scale;
-  const endY = y + Fwy * scale
+  const endY = y + Fwy * scale;
+
+  ctx.save();
+  ctx.strokeStyle = '#00aa00';
+  ctx.fillStyle = '#00aa00';
+  ctx.lineWidth = 3;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(endX, endY);
+  ctx.stroke();
+
+  const angle = Math.atan2(endY - y, endX - x);
+  const ah = 10;
+  ctx.beginPath();
+  ctx.moveTo(endX, endY);
+  ctx.lineTo(endX - ah * Math.cos(angle - Math.PI / 6),
+             endY - ah * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(endX - ah * Math.cos(angle + Math.PI / 6),
+             endY - ah * Math.sin(angle + Math.PI / 6));
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawWindVector() {
+  const originX = 60, originY = 60, scale = 5;
+  const Vwx = windSpeed * Math.cos(windDir + Math.PI);
+  const Vwy = windSpeed * Math.sin(windDir + Math.PI);
+  const endX = originX + Vwx * scale;
+  const endY = originY + Vwy * scale;
+
+  ctx.save();
+  ctx.strokeStyle = '#ff0000';
+  ctx.fillStyle = '#ff0000';
+  ctx.lineWidth = 2;
+
+  ctx.beginPath();
+  ctx.moveTo(originX, originY);
+  ctx.lineTo(endX, endY);
+  ctx.stroke();
+
+  const angle = Math.atan2(endY - originY, endX - originX);
+  const ah = 8;
+  ctx.beginPath();
+  ctx.moveTo(endX, endY);
+  ctx.lineTo(endX - ah * Math.cos(angle - Math.PI / 6),
+             endY - ah * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(endX - ah * Math.cos(angle + Math.PI / 6),
+             endY - ah * Math.sin(angle + Math.PI / 6));
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function render() {
+  step();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawGrid();
+  drawTrail();
+  drawBoat();
+  drawForceVector();
+  drawWindVector();
+  drawDebugText();
+  requestAnimationFrame(render);
+}
+
+render();

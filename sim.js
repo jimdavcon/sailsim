@@ -17,8 +17,12 @@ const Iz = 2.5;         // yaw inertia [kg m^2]
 const rhoAir = 1.225;   // air density [kg/m^3]
 const rhoWater = 1025;  // water density [kg/m^3]
 
-// Hull hydrodynamics (now lift+drag like wing, in water)
-const Ah = 0.25;        // reference area for hull [m^2] (side/planform)
+// Hull hydrodynamics (Option C: keel-like)
+const Ah = 0.30;            // reference area [m^2]
+const CLalpha_h = 4.0;
+const CLmax_h   = 1.5;
+const CD0_h     = 0.01;
+const k_induced_h = 0.05;
 
 // Wing parameters (6 ft × 1 ft)
 const Aw = 0.56;              // wing area [m^2]
@@ -27,7 +31,7 @@ const CLmax = 1.2;            // stall limit
 const CD0 = 0.02;             // profile drag
 const k_induced = 0.08;       // induced drag
 
-// Yaw damping (still a simple hydrodynamic moment term)
+// Yaw damping
 const Cr  = 5.0;
 
 // Mast at CG → no direct moment arm
@@ -149,19 +153,15 @@ function step() {
   debugLift = L;
   debugDrag = D;
 
-  // --- Hull hydrodynamics (lift + drag in water) ---
-  // Water is stationary in world frame, so hull velocity relative to water in body frame is just (u, v)
+  // --- Hull hydrodynamics (Option C) ---
   const Vh = Math.hypot(u, v) || 1e-6;
-  const betaH = Math.atan2(v, u);   // direction of hull motion in body frame
+  const betaH = Math.atan2(v, u);
 
-  // Hull AoA relative to its x-axis
-  const alphaH = betaH;             // hull "wing" aligned with x-axis
+  let CLh = CLalpha_h * betaH;
+  if (CLh > CLmax_h) CLh = CLmax_h;
+  if (CLh < -CLmax_h) CLh = -CLmax_h;
 
-  let CLh = CLalpha * alphaH;
-  if (CLh > CLmax) CLh = CLmax;
-  if (CLh < -CLmax) CLh = -CLmax;
-
-  const CDh = CD0 + k_induced * CLh * CLh;
+  const CDh = CD0_h + k_induced_h * CLh * CLh;
 
   const qh = 0.5 * rhoWater * Vh * Vh;
 
@@ -180,7 +180,7 @@ function step() {
   const F_hull_x = Lh * liftHDirX + Dh * dragHDirX;
   const F_hull_y = Lh * liftHDirY + Dh * dragHDirY;
 
-  // Hull hydrodynamic moment (still just yaw damping)
+  // Hull yaw damping
   const Md = -Cr * r * Math.abs(r);
 
   // --- Total forces and moment in body frame ---

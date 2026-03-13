@@ -2,15 +2,28 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Origin Circuit</title>
+    <title>Autonomous Sailboat: Wing Dynamics</title>
     <style>
-        body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; }
-        #ui-sidebar { width: 10%; min-width: 150px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-right: 1px solid #586e75; flex-shrink: 0; }
+        body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
+        
+        #ui-sidebar { 
+            width: 12%; min-width: 180px; height: 100%; 
+            background: #073642; padding: 15px; box-sizing: border-box; 
+            color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; 
+        }
+
         #world-container { flex-grow: 1; height: 100%; background: #002b36; overflow: hidden; }
         canvas { display: block; width: 100%; height: 100%; }
+        
         .section { margin-bottom: 20px; border-bottom: 1px solid #586e75; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
+        
+        .wing-row { margin: 10px 0; }
+        .bar-bg { width: 100%; height: 8px; background: #002b36; position: relative; border-radius: 4px; border: 1px solid #586e75; }
+        .bar-fill { height: 100%; background: #2aa198; width: 0%; position: absolute; left: 50%; transition: width 0.1s; }
+        .center-line { position: absolute; left: 50%; top: -2px; height: 12px; width: 1px; background: #93a1a1; }
+        
         #telemetry { color: #268bd2; font-size: 11px; white-space: pre-wrap; line-height: 1.4; }
         h3 { font-size: 13px; margin: 0 0 15px 0; color: #b58900; }
     </style>
@@ -18,21 +31,28 @@
 <body>
 
 <div id="ui-sidebar">
-    <h3>ORIGIN LOOP</h3>
+    <h3>WING TELEMETRY</h3>
+    
     <div class="section">
-        <div class="label">Wind Direction</div>
+        <div class="label">Forward Wing AoA</div>
+        <div class="wing-row">
+            <div class="bar-bg"><div id="bar0" class="bar-fill"></div><div class="center-line"></div></div>
+        </div>
+        <div class="label">Aft Wing AoA</div>
+        <div class="wing-row">
+            <div class="bar-bg"><div id="bar1" class="bar-fill"></div><div class="center-line"></div></div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="label">Wind Controls</div>
         <input type="range" id="windDir" min="0" max="360" value="45">
         <span id="wdVal">45</span>°
-    </div>
-    <div class="section">
-        <div class="label">Wind Speed</div>
         <input type="range" id="windSpd" min="0" max="40" value="0">
         <span id="wsVal">0</span> kts
     </div>
-    <div class="section">
-        <div class="label">Navigation</div>
-        <div id="telemetry">Targeting Origin...</div>
-    </div>
+
+    <div id="telemetry">Status: Idle</div>
 </div>
 
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
@@ -45,16 +65,15 @@ const container = document.getElementById('world-container');
 let WORLD_SIZE_FT = 2200;
 let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
-const STALL_LIMIT = 0.25;
+const STALL_LIMIT = 0.25; // Radians (~14 degrees)
 
 let wind = { angle: 45 * Math.PI/180, speed: 0 };
 let waypoints = [];
 let currentWPIndex = 0;
 let tackState = 0; 
 
-// Initializing boat at Origin (0,0)
 const boat = {
-    l: 6, w: 2, x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0,
+    x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0,
     sails: [{ x_off: 3.5, alpha: 0, angle: 0 }, { x_off: -3.5, alpha: 0, angle: 0 }]
 };
 
@@ -68,13 +87,12 @@ function resize() {
 function initSquareMission() {
     const d = 500 * PX_PER_FT;
     const r = 100 * PX_PER_FT; 
-    // Waypoints include the corners and a return-to-origin
     waypoints = [
         { x:  d, y: -d, r: r, id: "WP1" },
         { x:  d, y:  d, r: r, id: "WP2" },
         { x: -d, y:  d, r: r, id: "WP3" },
         { x: -d, y: -d, r: r, id: "WP4" },
-        { x:  0, y:  0, r: r, id: "ORIGIN" } // Return home before restarting loop
+        { x:  0, y:  0, r: r, id: "ORIGIN" }
     ];
 }
 
@@ -86,8 +104,6 @@ function update(dt) {
     const pB = waypoints[currentWPIndex];
     
     const distToTarget = Math.hypot(pB.x - boat.x, pB.y - boat.y);
-
-    // TRIGGER: Proximity based
     if (distToTarget <= pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
         tackState = 0;
@@ -115,27 +131,31 @@ function update(dt) {
     const normErr = Math.min(1, Math.abs(hErr) / (Math.PI / 2)); 
     const steerGain = 2.0 + (5.0 * normErr); 
     const speedScalar = 1.0 - (1.0 * normErr); 
-
     const baseSpeed = wind.speed * 0.4; 
 
     boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
     boat.theta += boat.omega * dt;
-    
     boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
 
-    boat.sails.forEach((s) => {
+    boat.sails.forEach((s, i) => {
         const wRel = wind.angle - boat.theta;
         const speedAlpha = Math.sign(Math.sin(wRel)) * -0.21;
         const steerAlpha = hErr * 0.6;
         s.alpha = (speedAlpha * (1 - normErr)) + (steerAlpha * normErr);
         s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, s.alpha));
         s.angle = wind.angle + s.alpha;
+
+        // Update UI Bars: Map -STALL to +STALL to -50% to +50% width
+        const pct = (s.alpha / STALL_LIMIT) * 50;
+        const bar = document.getElementById(`bar${i}`);
+        bar.style.width = Math.abs(pct) + "%";
+        bar.style.left = pct < 0 ? (50 + pct) + "%" : "50%";
+        bar.style.background = Math.abs(s.alpha) >= STALL_LIMIT * 0.95 ? "#dc322f" : "#2aa198";
     });
 
-    document.getElementById('telemetry').innerText = 
-        `TARGET: ${pB.id}\nDIST: ${(distToTarget/PX_PER_FT).toFixed(0)} ft\nBRG ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nSPEED: ${(speedScalar*100).toFixed(0)}%`;
+    document.getElementById('telemetry').innerText = `BRG ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nSPD: ${(baseSpeed/KNOTS_TO_FTS).toFixed(1)} kts`;
 }
 
 function draw() {
@@ -144,38 +164,28 @@ function draw() {
 
     waypoints.forEach((wp, i) => {
         const prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
-        ctx.setLineDash([8, 8]);
-        ctx.strokeStyle = "rgba(147, 161, 161, 0.15)";
-        ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(wp.x, wp.y); ctx.stroke();
-        ctx.setLineDash([]);
         
-        const dx = wp.x - prev.x, dy = wp.y - prev.y, ang = Math.atan2(dy, dx);
-        ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.15)";
-        ctx.beginPath();
-        ctx.moveTo(prev.x + prev.r * Math.cos(ang + Math.PI/2), prev.y + prev.r * Math.sin(ang + Math.PI/2));
-        ctx.lineTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
-        ctx.moveTo(prev.x + prev.r * Math.cos(ang - Math.PI/2), prev.y + prev.r * Math.sin(ang - Math.PI/2));
-        ctx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
-        ctx.stroke();
+        // Corridor & Circles
+        ctx.setLineDash([8, 8]); ctx.strokeStyle = "rgba(147, 161, 161, 0.1)";
+        ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(wp.x, wp.y); ctx.stroke(); ctx.setLineDash([]);
         
         ctx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.3)";
         ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
-        
-        // Label the origin
-        if(wp.id === "ORIGIN") {
-            ctx.fillStyle = "#93a1a1";
-            ctx.font = "10px Arial";
-            ctx.fillText("ORIGIN", wp.x + 10, wp.y - 10);
-        }
+
+        // WIND ARROW at waypoint
+        ctx.save(); ctx.translate(wp.x, wp.y); ctx.rotate(wind.angle);
+        ctx.strokeStyle = "#268bd2"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-30, 0); ctx.lineTo(30, 0); 
+        ctx.lineTo(20, -5); ctx.moveTo(30, 0); ctx.lineTo(20, 5); ctx.stroke();
+        ctx.restore();
     });
 
+    // Boat
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-12, -6, 24, 12);
-    ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(12, 0, 3, 0, Math.PI*2); ctx.fill();
     boat.sails.forEach(s => {
         ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
         ctx.fillStyle = "rgba(42, 161, 152, 0.8)"; ctx.fillRect(-10, -2, 20, 4);
-        ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(10, 0, 2, 0, Math.PI*2); ctx.fill();
         ctx.restore();
     });
     ctx.restore(); ctx.restore();

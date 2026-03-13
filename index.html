@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Full Wind Range</title>
+    <title>Autonomous Sailboat: Zero-Base Start</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; height: 100vh; }
         #world-container { width: 90%; height: 100%; position: relative; overflow: hidden; border-right: 1px solid #586e75; }
@@ -19,7 +19,7 @@
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3>WIND & PRIORITY</h3>
+    <h3>SQUARE MISSION</h3>
     <div class="section">
         <div class="label">Wind Direction</div>
         <input type="range" id="windDir" min="0" max="360" value="45">
@@ -27,11 +27,11 @@
     </div>
     <div class="section">
         <div class="label">Wind Speed</div>
-        <input type="range" id="windSpd" min="0" max="40" value="15">
-        <span id="wsVal">15</span> kts
+        <input type="range" id="windSpd" min="0" max="40" value="0">
+        <span id="wsVal">0</span> kts
     </div>
     <div class="section">
-        <div class="label">Real-time Data</div>
+        <div class="label">Telemetry</div>
         <div id="telemetry">Ready...</div>
     </div>
 </div>
@@ -46,7 +46,8 @@ let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
 const STALL_LIMIT = 0.25;
 
-let wind = { angle: 45 * Math.PI/180, speed: 15 * KNOTS_TO_FTS };
+// Initialized to 0
+let wind = { angle: 45 * Math.PI/180, speed: 0 };
 let waypoints = [];
 let currentWPIndex = 0;
 let tackState = 0; 
@@ -74,7 +75,10 @@ function initSquareMission() {
     ];
 }
 
-document.getElementById('windDir').oninput = e => { wind.angle = e.target.value * Math.PI/180; document.getElementById('wdVal').innerText = e.target.value; };
+document.getElementById('windDir').oninput = e => { 
+    wind.angle = e.target.value * Math.PI/180; 
+    document.getElementById('wdVal').innerText = e.target.value; 
+};
 document.getElementById('windSpd').oninput = e => { 
     wind.speed = e.target.value * KNOTS_TO_FTS; 
     document.getElementById('wsVal').innerText = e.target.value; 
@@ -97,7 +101,6 @@ function update(dt) {
         tackState = 0;
     }
 
-    // PRIORITY LOGIC
     let steerGain = 2.0;
     let speedScalar = 1.0;
 
@@ -109,14 +112,8 @@ function update(dt) {
         if ((tackState === 1 && cte > 0) || (tackState === -1 && cte < 0)) tackState = 0;
     }
 
-    let targetX, targetY;
-    if (tackState === 0) {
-        targetX = pB.x; targetY = pB.y;
-    } else {
-        const lookAhead = 250 * PX_PER_FT;
-        targetX = pA.x + (atd + lookAhead) * uX + (tackState * pB.r) * (-uY);
-        targetY = pA.y + (atd + lookAhead) * uY + (tackState * pB.r) * uX;
-    }
+    let targetX = (tackState === 0) ? pB.x : pA.x + (atd + 250 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
+    let targetY = (tackState === 0) ? pB.y : pA.y + (atd + 250 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
 
     let hErr = Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta;
     while(hErr > Math.PI) hErr -= 2*Math.PI; while(hErr < -Math.PI) hErr += 2*Math.PI;
@@ -124,21 +121,20 @@ function update(dt) {
     boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
     boat.theta += boat.omega * dt;
     
-    // Boat speed is now more sensitive to wind speed
-    const baseSpeed = 2.0 + (wind.speed * 0.25); 
+    // Propulsion scaled by wind
+    const baseSpeed = 1.0 + (wind.speed * 0.3); 
     boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
 
-    // Visual Sail Position
     boat.sails.forEach((s) => {
-        const wRel = Math.atan2(Math.sin(wind.angle), Math.cos(wind.angle)) - boat.theta;
+        const wRel = wind.angle - boat.theta;
         s.alpha = (tackState !== 0) ? (hErr * 0.4) : (Math.sign(Math.sin(wRel)) * -0.2);
         s.angle = wind.angle + s.alpha;
     });
 
     document.getElementById('telemetry').innerText = 
-        `WIND: ${(wind.speed/KNOTS_TO_FTS).toFixed(1)} kts\nPRIORITY: ${tackState === 0 ? 'SPEED' : 'STEERING'}\nCTE: ${(cte/PX_PER_FT).toFixed(1)} ft`;
+        `ALONG-TRACK: ${(atd/PX_PER_FT).toFixed(0)} ft\nCROSS-TRACK: ${(cte/PX_PER_FT).toFixed(1)} ft\nWP: ${currentWPIndex + 1}`;
 }
 
 function draw() {
@@ -168,7 +164,17 @@ function draw() {
         ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(10, 0, 2, 0, Math.PI*2); ctx.fill();
         ctx.restore();
     });
-    ctx.restore(); ctx.restore();
+    ctx.restore();
+
+    // Wind Indicator (HUD)
+    ctx.restore(); ctx.save();
+    ctx.translate(50, 50);
+    ctx.rotate(wind.angle);
+    ctx.strokeStyle = "#268bd2";
+    ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(20, 0); ctx.lineTo(10, -5); ctx.moveTo(20,0); ctx.lineTo(10, 5); ctx.stroke();
+    ctx.fillStyle = "#268bd2"; ctx.font = "10px Arial";
+    ctx.fillText("WIND", -15, -10);
+    ctx.restore();
 }
 
 function loop() { update(0.016); draw(); requestAnimationFrame(loop); }

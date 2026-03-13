@@ -2,58 +2,61 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Triple-Pane Debugger</title>
+    <title>Sailboat: Sidebar Chart Fix</title>
     <style>
-        /* Force screen to be exact window size */
-        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; color: #93a1a1; }
-
-        /* Vertical Stack Layout */
-        #app-wrapper { display: flex; flex-direction: column; width: 100vw; height: 100vh; }
-
-        /* Pane 1: Top Bar (Telemetry) */
-        #telemetry-pane { height: 40px; background: #073642; display: flex; align-items: center; padding: 0 20px; border-bottom: 1px solid #586e75; font-size: 12px; gap: 20px; flex-shrink: 0; }
-        .stat-item { color: #268bd2; }
-
-        /* Pane 2: World Map (Middle) */
-        #world-pane { flex-grow: 1; background: #002b36; position: relative; overflow: hidden; }
-        #simCanvas { position: absolute; top:0; left:0; width: 100%; height: 100%; }
-
-        /* Pane 3: Stripchart (Bottom) - FORCED HEIGHT */
-        #chart-pane { height: 180px; background: #001e26; border-top: 2px solid #dc322f; /* RED BORDER TO DEBUG */ position: relative; flex-shrink: 0; }
-        #chartCanvas { width: 100%; height: 100%; display: block; }
-
-        /* Floating Controls on Right */
-        #controls-overlay { position: absolute; top: 50px; right: 10px; width: 160px; background: rgba(7, 54, 66, 0.9); padding: 15px; border: 1px solid #586e75; z-index: 100; border-radius: 5px; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         
-        input { width: 100%; cursor: pointer; accent-color: #859900; }
-        label { font-size: 10px; display: block; margin-top: 10px; }
-        .legend { position: absolute; bottom: 5px; right: 10px; font-size: 11px; }
+        /* Main World Map (Takes all space not used by sidebar) */
+        #world-pane { position: absolute; top: 0; left: 0; right: 240px; bottom: 0; background: #002b36; }
+        
+        /* Sidebar (Increased width to accommodate chart) */
+        #ui-sidebar { 
+            position: absolute; top: 0; right: 0; width: 240px; bottom: 0; 
+            background: #073642; border-left: 1px solid #586e75; 
+            padding: 15px; box-sizing: border-box; color: #859900;
+            display: flex; flex-direction: column;
+        }
+        
+        canvas { width: 100%; height: 100%; display: block; }
+        
+        /* Stripchart container inside sidebar */
+        #chart-box { 
+            width: 100%; height: 150px; background: #001e26; 
+            margin-top: auto; border: 1px solid #586e75; position: relative;
+        }
+
+        .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin: 15px 0 5px 0; }
+        input { width: 100%; accent-color: #859900; margin-bottom: 10px; }
+        #telemetry { font-size: 11px; color: #268bd2; line-height: 1.6; background: #00212b; padding: 10px; border-radius: 4px; }
     </style>
 </head>
 <body>
 
-<div id="app-wrapper">
-    <div id="telemetry-pane">
-        <div>STATUS: <span id="status" class="stat-item">ACTIVE</span></div>
-        <div>CTE: <span id="cte-val" class="stat-item">0.0</span> ft</div>
-        <div>TARGET: <span id="wp-val" class="stat-item">WP1</span></div>
+<div id="world-pane">
+    <canvas id="simCanvas"></canvas>
+</div>
+
+<div id="ui-sidebar">
+    <h3 style="margin:0 0 15px 0; color:#b58900;">INSTRUMENTS</h3>
+    
+    <div id="telemetry">
+        MODE: <span id="mode-val">LINE</span><br>
+        WP: <span id="wp-val">1</span><br>
+        CTE: <span id="cte-val">0</span> ft<br>
+        BRG: <span id="brg-val">0</span>°
     </div>
 
-    <div id="world-pane">
-        <canvas id="simCanvas"></canvas>
-        <div id="controls-overlay">
-            <h4 style="margin:0 0 10px 0; color:#b58900">ENVIRONMENT</h4>
-            <label>WIND DIR</label>
-            <input type="range" id="windDir" min="0" max="360" value="45">
-            <label>WIND SPD (kts)</label>
-            <input type="range" id="windSpd" min="0" max="40" value="10">
-        </div>
-    </div>
+    <div class="label">Wind Direction</div>
+    <input type="range" id="windDir" min="0" max="360" value="45">
+    
+    <div class="label">Wind Speed</div>
+    <input type="range" id="windSpd" min="0" max="40" value="12">
 
-    <div id="chart-pane">
+    <div class="label">Stripchart</div>
+    <div id="chart-box">
         <canvas id="chartCanvas"></canvas>
-        <div class="legend">
-            <span style="color:#b58900">■ CTE</span> | <span style="color:#2aa198">■ BEARING CMD</span>
+        <div style="position:absolute; bottom:2px; right:4px; font-size:9px; color:#586e75;">
+            YEL:CTE | CYN:BRG
         </div>
     </div>
 </div>
@@ -66,11 +69,12 @@ const cCtx = chartCanvas.getContext('2d');
 
 let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
-let wind = { angle: 0.78, speed: 10 * KNOTS_TO_FTS };
+let wind = { angle: 0.78, speed: 12 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
 let history = [];
-let boat = { x: 0, y: 0, theta: 0, omega: 0, sails: [{off: 3.5}, {off: -3.5}] };
+let boat = { x: 0, y: 0, theta: 0, omega: 0 };
+let lastTargetB = 0;
 
 function norm(a) {
     while (a > Math.PI) a -= 2 * Math.PI;
@@ -83,12 +87,12 @@ function resize() {
     simCanvas.height = simCanvas.offsetHeight;
     chartCanvas.width = chartCanvas.offsetWidth;
     chartCanvas.height = chartCanvas.offsetHeight;
-    PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 2000;
+    PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 1800;
     
-    const d = 500 * PX_PER_FT; const r = 100 * PX_PER_FT;
+    const d = 400 * PX_PER_FT; const r = 80 * PX_PER_FT;
     waypoints = [
-        {x:d, y:-d, r:r, id:"WP1"}, {x:d, y:d, r:r, id:"WP2"},
-        {x:-d, y:d, r:r, id:"WP3"}, {x:-d, y:-d, r:r, id:"WP4"}
+        {x:d, y:-d, r:r, id:"1"}, {x:d, y:d, r:r, id:"2"},
+        {x:-d, y:d, r:r, id:"3"}, {x:-d, y:-d, r:r, id:"4"}
     ];
 }
 
@@ -99,67 +103,70 @@ function update() {
     let pA = currentWPIndex === 0 ? waypoints[waypoints.length-1] : waypoints[currentWPIndex-1];
     let pB = waypoints[currentWPIndex];
 
-    // Physics & CTE
     let dx = pB.x - pA.x, dy = pB.y - pA.y, len = Math.hypot(dx, dy);
     let ux = dx/len, uy = dy/len;
     let atd = (boat.x - pA.x)*ux + (boat.y - pA.y)*uy;
     let cte = (boat.x - pA.x)*(-uy) + (boat.y - pA.y)*ux;
 
-    // WP Logic
     if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
         boat.omega *= 0.1;
     }
 
-    // Steering logic (Targeting a point 400ft ahead on the line)
-    let tackState = Math.abs(cte) > pB.r ? Math.sign(cte) * -1 : 0;
-    let tx = pA.x + (atd + 400*PX_PER_FT)*ux + (tackState * pB.r)*(-uy);
-    let ty = pA.y + (atd + 400*PX_PER_FT)*uy + (tackState * pB.r)*ux;
+    // Steering Stability: Look-ahead point
+    let tx = pA.x + (atd + 400*PX_PER_FT)*ux;
+    let ty = pA.y + (atd + 400*PX_PER_FT)*uy;
     
-    let targetB = Math.atan2(ty - boat.y, tx - boat.x);
-    let err = norm(targetB - boat.theta);
+    let rawTargetB = Math.atan2(ty - boat.y, tx - boat.x);
+    // Smooth the target bearing to prevent sign-flip 360s
+    let targetB = lastTargetB + norm(rawTargetB - lastTargetB);
+    lastTargetB = targetB;
 
-    boat.omega += (err * 3.0 - boat.omega * 5.0) * 0.016;
+    let err = norm(targetB - boat.theta);
+    boat.omega += (err * 4.0 - boat.omega * 6.0) * 0.016;
     boat.theta = norm(boat.theta + boat.omega * 0.016);
     
-    let speed = wind.speed * 0.4 * (1.0 - Math.min(1, Math.abs(err)));
+    let speed = wind.speed * 0.4 * (1.0 - Math.min(0.8, Math.abs(err)));
     boat.x += Math.cos(boat.theta) * speed;
     boat.y += Math.sin(boat.theta) * speed;
 
-    // UI Updates
-    document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(1);
+    document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
     document.getElementById('wp-val').innerText = pB.id;
-    history.push({cte: cte/PX_PER_FT, brg: targetB});
+    document.getElementById('brg-val').innerText = (norm(targetB) * 180/Math.PI).toFixed(0);
+
+    history.push({cte: cte/PX_PER_FT, brg: norm(targetB)});
     if(history.length > chartCanvas.width) history.shift();
 }
 
 function draw() {
-    // 1. Draw World
+    // 1. World Map
     sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
     sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
     
     waypoints.forEach((wp, i) => {
-        sCtx.strokeStyle = (i===currentWPIndex) ? "#859900" : "#586e75";
+        sCtx.strokeStyle = (i===currentWPIndex) ? "#859900" : "#073642";
+        sCtx.setLineDash([5, 5]);
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
+        sCtx.setLineDash([]);
     });
 
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
     sCtx.strokeStyle = "#eee8d5"; sCtx.strokeRect(-12,-6,24,12);
+    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(8,-2,4,4);
     sCtx.restore(); sCtx.restore();
 
-    // 2. Draw Chart
+    // 2. Stripchart in Sidebar
     cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
-    cCtx.strokeStyle = "#586e75"; cCtx.beginPath(); cCtx.moveTo(0,90); cCtx.lineTo(chartCanvas.width, 90); cCtx.stroke();
+    cCtx.strokeStyle = "#586e75"; cCtx.beginPath(); cCtx.moveTo(0,75); cCtx.lineTo(chartCanvas.width, 75); cCtx.stroke();
     
-    cCtx.lineWidth = 2;
-    // CTE Plot
+    // Plot CTE
     cCtx.strokeStyle = "#b58900"; cCtx.beginPath();
-    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 90-h.cte*0.4); else cCtx.lineTo(i, 90-h.cte*0.4); });
+    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.cte*0.4); else cCtx.lineTo(i, 75-h.cte*0.4); });
     cCtx.stroke();
 
-    // Bearing Plot
+    // Plot Bearing
     cCtx.strokeStyle = "#2aa198"; cCtx.beginPath();
-    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 90-h.brg*20); else cCtx.lineTo(i, 90-h.brg*20); });
+    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.brg*20); else cCtx.lineTo(i, 75-h.brg*20); });
     cCtx.stroke();
 }
 

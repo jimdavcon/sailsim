@@ -2,60 +2,91 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Visible Debugger</title>
+    <title>Sailboat: Debugger Fixed Layout</title>
     <style>
-        body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; }
-        
-        /* UI Sidebar on the Right */
-        #ui-sidebar { width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; order: 2; }
-        
-        /* Main Viewport Area */
-        #main-view { flex-grow: 1; display: flex; flex-direction: column; height: 100%; order: 1; }
-        
-        #world-container { flex-grow: 1; background: #002b36; overflow: hidden; position: relative; }
-        #simCanvas { width: 100%; height: 100%; display: block; }
+        /* Force the body to be exactly the size of the window */
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; }
 
-        /* Stripchart at the bottom */
-        #chart-container { height: 150px; background: #001e26; border-top: 2px solid #586e75; position: relative; width: 100%; }
-        #chartCanvas { width: 100%; height: 100%; display: block; }
+        /* Use Grid to define the main areas */
+        .app-container {
+            display: grid;
+            grid-template-columns: 1fr 200px; /* Simulation/Chart | Sidebar */
+            grid-template-rows: 1fr 150px;    /* Simulation | Stripchart */
+            width: 100vw;
+            height: 100vh;
+        }
 
+        #world-container {
+            grid-column: 1;
+            grid-row: 1;
+            background: #002b36;
+            position: relative;
+        }
+
+        #chart-container {
+            grid-column: 1;
+            grid-row: 2;
+            background: #001e26;
+            border-top: 2px solid #586e75;
+            position: relative;
+        }
+
+        #ui-sidebar {
+            grid-column: 2;
+            grid-row: 1 / span 2; /* Sidebar takes full height */
+            background: #073642;
+            padding: 15px;
+            color: #859900;
+            border-left: 1px solid #586e75;
+            box-sizing: border-box;
+        }
+
+        canvas { width: 100%; height: 100%; display: block; }
+
+        /* UI Styling */
         .section { margin-bottom: 20px; border-bottom: 1px solid #586e75; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
+        #telemetry { color: #268bd2; font-size: 11px; white-space: pre-wrap; line-height: 1.4; }
+        h3 { font-size: 13px; margin: 0 0 15px 0; color: #b58900; }
+        .chart-legend { position: absolute; top: 5px; right: 10px; font-size: 10px; color: #93a1a1; z-index: 20; }
+        
+        /* Bar Gauges */
         .wing-row { margin: 10px 0; }
         .bar-bg { width: 100%; height: 8px; background: #002b36; position: relative; border-radius: 4px; border: 1px solid #586e75; }
         .bar-fill { height: 100%; background: #2aa198; width: 0%; position: absolute; left: 50%; }
         .center-line { position: absolute; left: 50%; top: -2px; height: 12px; width: 1px; background: #93a1a1; }
-        #telemetry { color: #268bd2; font-size: 11px; white-space: pre-wrap; line-height: 1.4; }
-        h3 { font-size: 13px; margin: 0 0 15px 0; color: #b58900; }
-        .chart-legend { position: absolute; top: 5px; right: 10px; font-size: 10px; color: #93a1a1; pointer-events: none; }
     </style>
 </head>
 <body>
 
-<div id="ui-sidebar">
-    <h3>WING AoA</h3>
-    <div class="section">
-        <div class="label">Forward Wing</div>
-        <div class="wing-row"><div class="bar-bg"><div id="bar0" class="bar-fill"></div><div class="center-line"></div></div></div>
-        <div class="label">Aft Wing</div>
-        <div class="wing-row"><div class="bar-bg"><div id="bar1" class="bar-fill"></div><div class="center-line"></div></div></div>
-    </div>
-    <div class="section">
-        <div class="label">Wind</div>
-        <input type="range" id="windDir" min="0" max="360" value="45"> <span id="wdVal">45</span>°
-        <input type="range" id="windSpd" min="0" max="40" value="0"> <span id="wsVal">0</span> kts
-    </div>
-    <div id="telemetry">Status: Active</div>
-</div>
-
-<div id="main-view">
+<div class="app-container">
     <div id="world-container">
         <canvas id="simCanvas"></canvas>
     </div>
+
     <div id="chart-container">
-        <div class="chart-legend"><span style="color:#b58900">■ CTE</span> | <span style="color:#2aa198">■ BEARING CMD</span></div>
+        <div class="chart-legend">
+            <span style="color:#b58900">■ CTE (ft)</span> | 
+            <span style="color:#2aa198">■ BEARING (rad)</span>
+        </div>
         <canvas id="chartCanvas"></canvas>
+    </div>
+
+    <div id="ui-sidebar">
+        <h3>WING AoA</h3>
+        <div class="section">
+            <div class="label">Forward Wing</div>
+            <div class="wing-row"><div class="bar-bg"><div id="bar0" class="bar-fill"></div><div class="center-line"></div></div></div>
+            <div class="label">Aft Wing</div>
+            <div class="wing-row"><div class="bar-bg"><div id="bar1" class="bar-fill"></div><div class="center-line"></div></div></div>
+        </div>
+        <div class="section">
+            <div class="label">Wind</div>
+            <input type="range" id="windDir" min="0" max="360" value="45"> <span id="wdVal">45</span>°
+            <input type="range" id="windSpd" min="0" max="40" value="0"> <span id="wsVal">0</span> kts
+        </div>
+        <div id="telemetry">Status: Active</div>
     </div>
 </div>
 
@@ -85,9 +116,10 @@ function norm(a) {
 }
 
 function resize() {
-    canvas.width = canvas.parentElement.clientWidth;
-    canvas.height = canvas.parentElement.clientHeight;
-    chartCanvas.width = chartCanvas.parentElement.clientWidth;
+    // Explicitly set canvas dimensions to their pixel-rendered size
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+    chartCanvas.width = chartCanvas.clientWidth;
     chartCanvas.height = 150;
     PX_PER_FT = Math.min(canvas.width, canvas.height) / WORLD_SIZE_FT;
     initSquareMission();
@@ -102,8 +134,14 @@ function initSquareMission() {
     ];
 }
 
-document.getElementById('windDir').oninput = e => { wind.angle = e.target.value * Math.PI/180; document.getElementById('wdVal').innerText = e.target.value; };
-document.getElementById('windSpd').oninput = e => { wind.speed = e.target.value * KNOTS_TO_FTS; document.getElementById('wsVal').innerText = e.target.value; };
+document.getElementById('windDir').oninput = e => { 
+    wind.angle = e.target.value * Math.PI/180; 
+    document.getElementById('wdVal').innerText = e.target.value; 
+};
+document.getElementById('windSpd').oninput = e => { 
+    wind.speed = e.target.value * KNOTS_TO_FTS; 
+    document.getElementById('wsVal').innerText = e.target.value; 
+};
 
 function update(dt) {
     const pA = (currentWPIndex === 0) ? waypoints[waypoints.length - 1] : waypoints[currentWPIndex - 1];
@@ -131,7 +169,6 @@ function update(dt) {
     const targetBearing = Math.atan2(ty - boat.y, tx - boat.x);
     const hErr = norm(targetBearing - boat.theta);
     
-    // Data logging
     history.push({ cte: cte / PX_PER_FT, bearing: targetBearing });
     if (history.length > chartCanvas.width) history.shift();
 
@@ -191,30 +228,42 @@ function draw() {
     });
     ctx.restore(); ctx.restore();
 
-    // DRAW STRIPCHART
-    chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
-    chartCtx.strokeStyle = "#586e75"; chartCtx.beginPath(); chartCtx.moveTo(0, 75); chartCtx.lineTo(chartCanvas.width, 75); chartCtx.stroke();
+    // STRIPCHART DRAWING
+    chartCtx.fillStyle = "#001e26";
+    chartCtx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
     
-    chartCtx.lineWidth = 1.5;
-    // Plot CTE (Yellow)
-    chartCtx.strokeStyle = "#b58900"; chartCtx.beginPath();
+    // Baseline
+    chartCtx.strokeStyle = "#586e75"; chartCtx.lineWidth = 1;
+    chartCtx.beginPath(); chartCtx.moveTo(0, 75); chartCtx.lineTo(chartCanvas.width, 75); chartCtx.stroke();
+    
+    // Plot CTE (Yellow) - Scale: 1px = 2ft
+    chartCtx.strokeStyle = "#b58900"; chartCtx.lineWidth = 2;
+    chartCtx.beginPath();
     history.forEach((pt, i) => {
-        let y = 75 - (pt.cte * 0.4); 
+        let y = 75 - (pt.cte * 0.5); 
         if (i === 0) chartCtx.moveTo(i, y); else chartCtx.lineTo(i, y);
     });
     chartCtx.stroke();
 
-    // Plot Bearing Command (Cyan)
-    chartCtx.strokeStyle = "#2aa198"; chartCtx.beginPath();
+    // Plot Bearing (Cyan) - Scale: +/- PI maps to +/- 60px
+    chartCtx.strokeStyle = "#2aa198"; chartCtx.lineWidth = 2;
+    chartCtx.beginPath();
     history.forEach((pt, i) => {
-        let y = 75 - (pt.bearing * (70/Math.PI)); 
+        let y = 75 - (pt.bearing * (60/Math.PI)); 
         if (i === 0) chartCtx.moveTo(i, y); else chartCtx.lineTo(i, y);
     });
     chartCtx.stroke();
 }
 
-function loop() { update(0.016); draw(); requestAnimationFrame(loop); }
-window.onresize = resize; resize(); loop();
+function loop() { 
+    update(0.016); 
+    draw(); 
+    requestAnimationFrame(loop); 
+}
+
+window.addEventListener('resize', resize);
+resize();
+loop();
 </script>
 </body>
 </html>

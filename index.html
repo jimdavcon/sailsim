@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Clockwise Square Mission</title>
+    <title>Autonomous Sailboat: Precision Tacking</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; height: 100vh; }
         #world-container { width: 90%; height: 100%; position: relative; overflow: hidden; border-right: 1px solid #586e75; }
-        #ui-sidebar { width: 10%; height: 100%; background: #002b36; padding: 15px; box-sizing: border-box; display: flex; flex-direction: column; color: #859900; min-width: 170px; z-index: 10; }
+        #ui-sidebar { width: 10%; height: 100%; background: #002b36; padding: 15px; box-sizing: border-box; color: #859900; min-width: 170px; z-index: 10; }
         .section { margin-bottom: 20px; border-bottom: 1px solid #073642; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
@@ -19,7 +19,7 @@
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3>SQUARE MISSION</h3>
+    <h3>TACK MASTER</h3>
     <div class="section">
         <div class="label">Wind Control</div>
         <input type="range" id="windDir" min="0" max="360" value="0">
@@ -28,8 +28,8 @@
         Spd: <span id="wsVal">15</span> kts
     </div>
     <div class="section">
-        <div class="label">Mission Data</div>
-        <div id="telemetry">Calculating...</div>
+        <div class="label">Mission State</div>
+        <div id="telemetry">Calibrating...</div>
     </div>
 </div>
 
@@ -39,117 +39,142 @@ const ctx = canvas.getContext('2d');
 const container = document.getElementById('world-container');
 
 let WORLD_SIZE_FT = 2000;
-let PX_PER_FT; 
+let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
-const STALL_LIMIT = 0.25;
+const STALL_LIMIT = 0.25; // 14.3 degrees
 
 let wind = { angle: 0, speed: 15 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
-let tackState = 1; 
+let tackState = 1; // 1 = Aim for Left Limit, -1 = Aim for Right Limit
 
 const boat = {
-    l: 6, w: 1.5, mass: 50, x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0,
-    sails: [{ x_off: 2, alpha: 0 }, { x_off: -2, alpha: 0 }]
+    l: 6, w: 2, mass: 50, x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0,
+    sails: [{ x_off: 2.5, alpha: 0, angle: 0 }, { x_off: -2.5, alpha: 0, angle: 0 }]
 };
 
 function resize() {
     canvas.width = container.clientWidth;
     canvas.height = container.clientHeight;
     PX_PER_FT = Math.min(canvas.width, canvas.height) / WORLD_SIZE_FT;
-    initSquareMission();
+    if (waypoints.length === 0) initSquareMission();
 }
 
 function initSquareMission() {
-    const R = 60 * PX_PER_FT; // Standard radius
-    const d = 500 * PX_PER_FT; // Distance from origin
-    
-    // Order: Clockwise starting from (+500, +500)
-    // Note: Canvas Y-axis is inverted, so +500 is "down" on screen. 
-    // To maintain clockwise math relative to origin:
+    const d = 500 * PX_PER_FT;
+    const r = 50 * PX_PER_FT;
     waypoints = [
-        { x:  d, y: -d, r: R }, // Corner 1: Top Right (+X, -Y)
-        { x:  d, y:  d, r: R }, // Corner 2: Bottom Right (+X, +Y)
-        { x: -d, y:  d, r: R }, // Corner 3: Bottom Left (-X, +Y)
-        { x: -d, y: -d, r: R }  // Corner 4: Top Left (-X, -Y)
+        { x:  d, y: -d, r: r }, // WP1: Top Right
+        { x:  d, y:  d, r: r }, // WP2: Bottom Right
+        { x: -d, y:  d, r: r }, // WP3: Bottom Left
+        { x: -d, y: -d, r: r }  // WP4: Top Left
     ];
 }
 
 document.getElementById('windDir').oninput = e => { wind.angle = e.target.value * Math.PI/180; document.getElementById('wdVal').innerText = e.target.value; };
 document.getElementById('windSpd').oninput = e => { wind.speed = e.target.value * KNOTS_TO_FTS; document.getElementById('wsVal').innerText = e.target.value; };
 
-function getTangents(c1, c2) {
-    const dx = c2.x - c1.x, dy = c2.y - c1.y, dist = Math.hypot(dx, dy);
-    const angle = Math.atan2(dy, dx), dr = c1.r - c2.r;
-    const angleOffset = Math.acos(dr / dist);
-    return [
-        { x1: c1.x + c1.r * Math.cos(angle + angleOffset), y1: c1.y + c1.r * Math.sin(angle + angleOffset),
-          x2: c2.x + c2.r * Math.cos(angle + angleOffset), y2: c2.y + c2.r * Math.sin(angle + angleOffset) },
-        { x1: c1.x + c1.r * Math.cos(angle - angleOffset), y1: c1.y + c1.r * Math.sin(angle - angleOffset),
-          x2: c2.x + c2.r * Math.cos(angle - angleOffset), y2: c2.y + c2.r * Math.sin(angle - angleOffset) }
-    ];
-}
-
 function update(dt) {
-    const pA = waypoints[currentWPIndex];
-    const pB = waypoints[(currentWPIndex + 1) % waypoints.length];
+    const pA = (currentWPIndex === 0) ? {x:0, y:0, r:50*PX_PER_FT} : waypoints[currentWPIndex - 1];
+    const pB = waypoints[currentWPIndex];
     
-    const dx = pB.x - pA.x, dy = pB.y - pA.y, pathLen = Math.hypot(dx, dy);
+    // Calculate Segment Geometry
+    const dx = pB.x - pA.x, dy = pB.y - pA.y;
+    const pathLen = Math.hypot(dx, dy);
     const uX = dx / pathLen, uY = dy / pathLen;
+    
     const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
-    const corridorR = pA.r;
+    const distToDest = Math.hypot(pB.x - boat.x, pB.y - boat.y);
 
-    if (atd > pathLen) currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-    if (Math.abs(cte) > corridorR * 0.85) tackState = (cte > 0) ? -1 : 1;
+    // MISSION PROGRESSION CONSTRAINT:
+    // Switch if ATD >= PathLen AND boat is within the destination circle radius
+    if (atd >= pathLen && distToDest <= pB.r) {
+        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
+    }
 
-    // Guidance
-    const targetX = pA.x + (atd + 120 * PX_PER_FT) * uX + (tackState * corridorR * 0.7) * (-uY);
-    const targetY = pA.y + (atd + 120 * PX_PER_FT) * uY + (tackState * corridorR * 0.7) * uX;
+    // CROSS-TRACK CONSTRAINT:
+    // If CTE exceeds corridor boundary (radius of the waypoint), flip tack
+    if (Math.abs(cte) > pB.r) {
+        tackState = (cte > 0) ? -1 : 1; 
+    }
+
+    // Guidance: Target a point on the opposite corridor limit 200ft ahead
+    const lookAhead = 200 * PX_PER_FT;
+    const targetX = pA.x + (atd + lookAhead) * uX + (tackState * pB.r) * (-uY);
+    const targetY = pA.y + (atd + lookAhead) * uY + (tackState * pB.r) * uX;
     let hErr = Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta;
     while(hErr > Math.PI) hErr -= 2*Math.PI; while(hErr < -Math.PI) hErr += 2*Math.PI;
 
-    // Dynamics Simplified for Logic Visualization
-    boat.omega += (hErr * 2.0 - boat.omega * 4.0) * dt;
+    // Control and Physics
+    const steerCmd = (hErr * 1.8) - (boat.omega * 5.0);
+    boat.omega += steerCmd * dt;
     boat.theta += boat.omega * dt;
-    const speed = 4.0; // Fixed speed for geometry validation
+    
+    const speed = (5.0 + wind.speed * 0.1); 
     boat.vx = Math.cos(boat.theta) * speed;
     boat.vy = Math.sin(boat.theta) * speed;
     boat.x += boat.vx; boat.y += boat.vy;
 
+    // Update Sail Visuals (pointing into wind + alpha)
+    boat.sails.forEach((s, i) => {
+        const awL = Math.atan2(wind.speed * Math.sin(wind.angle) - boat.vy, wind.speed * Math.cos(wind.angle) - boat.vx) - boat.theta;
+        const requestedAlpha = (Math.sign(Math.sin(awL)) * -0.21) + (i === 0 ? steerCmd * 0.1 : -steerCmd * 0.1);
+        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, requestedAlpha));
+        s.angle = Math.atan2(wind.speed * Math.sin(wind.angle), wind.speed * Math.cos(wind.angle)) + s.alpha;
+    });
+
     document.getElementById('telemetry').innerText = 
-        `LEG: ${currentWPIndex + 1}\nATD: ${(atd/PX_PER_FT).toFixed(0)} ft\nCTE: ${(cte/PX_PER_FT).toFixed(1)} ft\nTACK: ${tackState>0?'PORT':'STBD'}`;
+        `DEST: WP${currentWPIndex+1}\nATD: ${(atd/PX_PER_FT).toFixed(0)} ft\nCTE: ${(cte/PX_PER_FT).toFixed(1)} ft\nDIST: ${(distToDest/PX_PER_FT).toFixed(0)} ft\nSTATUS: ${distToDest <= pB.r ? 'IN RANGE' : 'EN ROUTE'}`;
 }
 
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const cx = canvas.width / 2, cy = canvas.height / 2;
-    ctx.save(); ctx.translate(cx, cy);
+    ctx.save(); ctx.translate(canvas.width / 2, canvas.height / 2);
 
-    // Coordinate Grid
-    ctx.strokeStyle = "#073642"; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(-cx, 0); ctx.lineTo(cx, 0); ctx.moveTo(0, -cy); ctx.lineTo(0, cy); ctx.stroke();
-
-    // Mission Square
+    // Tangent Corridor Visualization
     waypoints.forEach((wp, i) => {
-        const next = waypoints[(i + 1) % waypoints.length];
-        const tangents = getTangents(wp, next);
-        ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.3)";
-        ctx.beginPath(); tangents.forEach(t => { ctx.moveTo(t.x1, t.y1); ctx.lineTo(t.x2, t.y2); }); ctx.stroke();
+        const prev = (i === 0) ? {x:0, y:0, r:50*PX_PER_FT} : waypoints[i-1];
+        const dx = wp.x - prev.x, dy = wp.y - prev.y;
+        const ang = Math.atan2(dy, dx);
         
-        // Waypoint Label
-        ctx.fillStyle = "#93a1a1"; ctx.font = "10px Courier";
-        ctx.fillText(`WP${i+1} (${(wp.x/PX_PER_FT).toFixed(0)},${(wp.y/PX_PER_FT).toFixed(0)})`, wp.x + 10, wp.y - 10);
-        ctx.beginPath(); ctx.arc(wp.x, wp.y, 4, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.2)";
+        ctx.setLineDash(i === currentWPIndex ? [] : [5, 5]);
+        
+        // Corridor Boundaries (Tangents)
+        ctx.beginPath();
+        ctx.moveTo(prev.x + prev.r * Math.cos(ang + Math.PI/2), prev.y + prev.r * Math.sin(ang + Math.PI/2));
+        ctx.lineTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(prev.x + prev.r * Math.cos(ang - Math.PI/2), prev.y + prev.r * Math.sin(ang - Math.PI/2));
+        ctx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
+        ctx.stroke();
+
+        ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
+        ctx.setLineDash([]);
     });
 
-    // Boat
+    // Boat Rendering
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
-    ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-10, -5, 20, 10);
-    ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(10, 0, 3, 0, Math.PI*2); ctx.fill();
-    ctx.restore();
+    
+    // Hull
+    ctx.strokeStyle = "#eee8d5"; ctx.lineWidth = 2;
+    ctx.strokeRect(-12, -6, 24, 12);
+    
+    // Red Directional Dot (Bow)
+    ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(12, 0, 3, 0, Math.PI*2); ctx.fill();
 
-    ctx.restore();
+    // Wingsails
+    boat.sails.forEach(s => {
+        ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
+        ctx.fillStyle = "rgba(42, 161, 152, 0.8)";
+        ctx.fillRect(-10, -2, 20, 4); // The Wing
+        ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(10, 0, 2, 0, Math.PI*2); ctx.fill(); // Leading edge dot
+        ctx.restore();
+    });
+
+    ctx.restore(); ctx.restore();
 }
 
 function loop() { update(0.016); draw(); requestAnimationFrame(loop); }

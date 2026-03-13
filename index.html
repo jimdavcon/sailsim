@@ -2,25 +2,25 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat Mission Analyzer</title>
+    <title>Autonomous Sailboat: Stall-Preventing Controller</title>
     <style>
         body { margin: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; color: #859900; }
         canvas { display: block; }
         #ui {
             position: absolute; top: 10px; left: 10px;
             background: rgba(0, 43, 54, 0.95); padding: 15px;
-            border: 1px solid #859900; width: 320px; font-size: 12px;
+            border: 1px solid #859900; width: 340px; font-size: 12px;
             pointer-events: auto; z-index: 10;
         }
         .slider-group { margin-bottom: 12px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
-        #telemetry { margin-top: 10px; border-top: 1px dotted #586e75; padding-top: 8px; color: #268bd2; white-space: pre; }
+        #telemetry { margin-top: 10px; border-top: 1px dotted #586e75; padding-top: 8px; color: #268bd2; white-space: pre; font-size: 11px; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <strong>MISSION CONTROL</strong>
+    <strong>ANTI-STALL NAV ANALYZER</strong>
     <div class="slider-group">
         <label>WIND DIRECTION: <span id="wdVal">0</span>°</label>
         <input type="range" id="windDir" min="0" max="360" value="0">
@@ -29,7 +29,7 @@
         <label>WIND SPEED: <span id="wsVal">12</span> kts</label>
         <input type="range" id="windSpd" min="0" max="40" value="12">
     </div>
-    <div id="telemetry">Calculating...</div>
+    <div id="telemetry">Initializing Controller...</div>
 </div>
 <canvas id="simCanvas"></canvas>
 
@@ -41,17 +41,14 @@ const SCALE = 35;
 const KNOTS_TO_FTS = 1.68781;
 const RHO_WATER = 1.99;
 const RHO_AIR = 0.00237; 
+const STALL_ANGLE = 0.25; // ~14.3 degrees safety margin
 
 let wind = { angle: 0, speed: 12 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
 
 function initMission() {
-    // Start Waypoint at (0,0) - Visual center or top-left depending on preference
-    // Here we use 50,50 as a visible "0,0" for the screen
     waypoints = [{ x: 50, y: 50, r: 40 }];
-    
-    // Generate 4 more within the visible bounds
     for(let i=0; i<4; i++) {
         waypoints.push({
             x: 100 + Math.random() * (window.innerWidth - 200),
@@ -63,146 +60,131 @@ function initMission() {
 
 const boat = {
     l: 6, w: 1.5, mass: 50, inertia: 90,
-    x: 50, y: 50, // Start at WP 0
-    theta: Math.PI, // Start facing into wind (-X)
-    vx: 0, vy: 0, omega: 0,
-    sails: [{ x_off: 2, alpha: 0, angle: 0 }, { x_off: -2, alpha: 0, angle: 0 }]
+    x: 50, y: 50,
+    theta: Math.PI, vx: 0, vy: 0, omega: 0,
+    sails: [
+        { x_off: 2, alpha: 0, angle: 0, targetAlpha: 0 }, 
+        { x_off: -2, alpha: 0, angle: 0, targetAlpha: 0 }
+    ]
 };
 
-// UI Handling
-document.getElementById('windDir').addEventListener('input', e => {
-    wind.angle = e.target.value * Math.PI / 180;
-    document.getElementById('wdVal').innerText = e.target.value;
-});
-document.getElementById('windSpd').addEventListener('input', e => {
-    wind.speed = e.target.value * KNOTS_TO_FTS;
-    document.getElementById('wsVal').innerText = e.target.value;
-});
-canvas.addEventListener('mousedown', e => {
-    waypoints.forEach(wp => {
-        if (Math.hypot(wp.x - e.clientX, wp.y - e.clientY) < 15) {
-            const val = prompt("Set radius for this node (ft):", wp.r / SCALE);
-            if (val) wp.r = parseFloat(val) * SCALE;
-        }
-    });
-});
+document.getElementById('windDir').addEventListener('input', e => { wind.angle = e.target.value * Math.PI / 180; document.getElementById('wdVal').innerText = e.target.value; });
+document.getElementById('windSpd').addEventListener('input', e => { wind.speed = e.target.value * KNOTS_TO_FTS; document.getElementById('wsVal').innerText = e.target.value; });
 
 function getNacaData(alpha) {
     const a = Math.abs(alpha);
-    const cl = (a < 0.26) ? 5.7 * alpha : 1.1 * Math.sin(2 * alpha);
-    const cd = (a < 0.26) ? 0.015 + 0.05 * (cl ** 2) : 1.2 * Math.pow(Math.sin(alpha), 2) + 0.02;
+    // Linear region only for analyzing "No-Stall" logic
+    const cl = 5.7 * alpha;
+    const cd = 0.015 + 0.05 * (cl ** 2);
     return { cl, cd };
 }
 
 function update(dt) {
-    const cosT = Math.cos(boat.theta);
-    const sinT = Math.sin(boat.theta);
+    const cosT = Math.cos(boat.theta), sinT = Math.sin(boat.theta);
 
-    // Corridor and Waypoint Logic
+    // 1. Navigation Logic
     let pA = waypoints[currentWPIndex];
     let pB = waypoints[(currentWPIndex + 1) % waypoints.length];
-    
-    const distToB = Math.hypot(pB.x - boat.x, pB.y - boat.y);
-    if (distToB < pB.r) {
-        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-    }
+    if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) currentWPIndex = (currentWPIndex + 1) % waypoints.length;
 
-    // Path following math
     const dx = pB.x - pA.x, dy = pB.y - pA.y;
     const d2 = dx*dx + dy*dy;
     const t = Math.max(0, Math.min(1, ((boat.x - pA.x) * dx + (boat.y - pA.y) * dy) / d2));
     const cte = Math.hypot(boat.x - (pA.x + t*dx), boat.y - (pA.y + t*dy));
     const side = Math.sign((pB.x - pA.x) * (boat.y - pA.y) - (pB.y - pA.y) * (boat.x - pA.x));
-    
-    const corridorR = pA.r + t * (pB.r - pA.r);
-    const targetTheta = Math.atan2(dy, dx) - (side * Math.pow(cte / corridorR, 1.5) * 1.0);
+    const targetTheta = Math.atan2(dy, dx) - (side * Math.min(1.2, (cte / (pA.r + t*(pB.r-pA.r)))) * 1.0);
 
-    // Heading Control
-    let error = targetTheta - boat.theta;
-    while (error > Math.PI) error -= 2 * Math.PI;
-    while (error < -Math.PI) error += 2 * Math.PI;
-    const steerCmd = (error * 1.2) - (boat.omega * 2.8);
+    // 2. Hierarchical Controller
+    let hError = targetTheta - boat.theta;
+    while (hError > Math.PI) hError -= 2 * Math.PI;
+    while (hError < -Math.PI) hError += 2 * Math.PI;
 
-    // Hull Hydro (NACA Profile)
+    // A. Required Torque for Heading (Inner Loop)
+    const steerCmd = (hError * 1.0) - (boat.omega * 3.0);
+
+    // B. Maximum Thrust Optimization (Outer Loop)
+    // If hError is small, increase AoA to maximize thrust
+    const thrustBias = (Math.abs(hError) < 0.2) ? 0.21 : 0.05; 
+
+    // 3. Physics & Stall-Clamped Sail Logic
+    let totalFx = 0, totalFy = 0, totalMz = 0;
+    const twX = wind.speed * Math.cos(wind.angle), twY = wind.speed * Math.sin(wind.angle);
+
+    boat.sails.forEach((s, i) => {
+        const awX = twX - boat.vx, awY = twY - boat.vy;
+        const awL = Math.atan2(awY, awX) - boat.theta;
+        
+        // Base direction: sign of wind determines lift side for max thrust
+        const thrustSign = (Math.sin(awL) > 0) ? -1 : 1;
+        
+        // Calculate raw requested alpha: Thrust + Differential Steering
+        let requestedAlpha = (thrustSign * thrustBias) + (i === 0 ? steerCmd : -steerCmd);
+        
+        // Anti-Stall Clamp: Final alpha never exceeds 0.25 rad
+        s.alpha = Math.max(-STALL_ANGLE, Math.min(STALL_ANGLE, requestedAlpha));
+
+        const sd = getNacaData(s.alpha);
+        const qA = 0.5 * RHO_AIR * (awX*awX + awY*awY) * 4;
+        const lF = (qA*sd.cl*Math.sin(s.alpha) - qA*sd.cd*Math.cos(s.alpha));
+        const sFy = (-qA*sd.cl*Math.cos(s.alpha) - qA*sd.cd*Math.sin(s.alpha));
+        
+        totalFx += lF * Math.cos(awL) - sFy * Math.sin(awL);
+        const bFy = lF * Math.sin(awL) + sFy * Math.cos(awL);
+        totalFy += bFy;
+        totalMz += (bFy * s.x_off);
+        s.angle = Math.atan2(awY, awX) + s.alpha;
+    });
+
+    // Hull Dynamics
     const vL = boat.vx * cosT + boat.vy * sinT, vS = -boat.vx * sinT + boat.vy * cosT;
     const hAlpha = Math.atan2(vS, vL);
     const hD = getNacaData(hAlpha);
     const hQ = 0.5 * RHO_WATER * (vL*vL + vS*vS) * (boat.l * 1.2);
-    let fx = (hQ*hD.cl*Math.sin(hAlpha) - hQ*hD.cd*Math.cos(hAlpha));
-    let fy = (-hQ*hD.cl*Math.cos(hAlpha) - hQ*hD.cd*Math.sin(hAlpha));
-    let mz = hQ * boat.l * (-0.1 * hD.cl);
+    totalFx += (hQ*hD.cl*Math.sin(hAlpha) - hQ*hD.cd*Math.cos(hAlpha));
+    totalFy += (-hQ*hD.cl*Math.cos(hAlpha) - hQ*hD.cd*Math.sin(hAlpha));
+    totalMz += hQ * boat.l * (-0.1 * hD.cl);
 
-    // Sail Aero (NASA Profile)
-    const twX = (wind.speed * Math.cos(wind.angle)), twY = (wind.speed * Math.sin(wind.angle));
-    boat.sails.forEach((s, i) => {
-        const awX = twX - boat.vx, awY = twY - boat.vy;
-        const awL = Math.atan2(awY, awX) - boat.theta;
-        let baseAlpha = (Math.sin(awL) > 0) ? -0.21 : 0.21;
-        s.alpha = baseAlpha + (i === 0 ? steerCmd : -steerCmd);
-        
-        const sd = getNacaData(s.alpha);
-        const qA = 0.5 * RHO_AIR * (awX*awX + awY*awY) * 4;
-        const sFx = (qA*sd.cl*Math.sin(s.alpha) - qA*sd.cd*Math.cos(s.alpha));
-        const sFy = (-qA*sd.cl*Math.cos(s.alpha) - qA*sd.cd*Math.sin(s.alpha));
-        
-        fx += sFx * Math.cos(awL) - sFy * Math.sin(awL);
-        const bFy = sFx * Math.sin(awL) + sFy * Math.cos(awL);
-        fy += bFy;
-        mz += (bFy * s.x_off);
-    });
-
-    // Integration
-    boat.vx += (fx * cosT - fy * sinT) / boat.mass * dt;
-    boat.vy += (fx * sinT + fy * cosT) / boat.mass * dt;
-    boat.omega += (mz - boat.omega * 50) / boat.inertia * dt;
+    // Integrate
+    boat.vx += (totalFx * cosT - totalFy * sinT) / boat.mass * dt;
+    boat.vy += (totalFx * sinT + totalFy * cosT) / boat.mass * dt;
+    boat.omega += (totalMz - boat.omega * 60) / boat.inertia * dt;
     boat.x += boat.vx * dt * SCALE; boat.y += boat.vy * dt * SCALE;
     boat.theta += boat.omega * dt;
 
-    // Wrapping
     if (boat.x < 0) boat.x = canvas.width; else if (boat.x > canvas.width) boat.x = 0;
     if (boat.y < 0) boat.y = canvas.height; else if (boat.y > canvas.height) boat.y = 0;
 
-    document.getElementById('telemetry').innerText = `CTE: ${(cte/SCALE).toFixed(2)} ft\nWP: ${currentWPIndex + 1} → ${ (currentWPIndex + 2 > 5) ? 1 : currentWPIndex+2}\nMODE: CORRIDOR FOLLOW`;
+    document.getElementById('telemetry').innerText = 
+        `HEADING ERR: ${(hError*180/Math.PI).toFixed(1)}°\n` +
+        `SAIL 1 ALPHA: ${(boat.sails[0].alpha*180/Math.PI).toFixed(1)}°\n` +
+        `SAIL 2 ALPHA: ${(boat.sails[1].alpha*180/Math.PI).toFixed(1)}°\n` +
+        `STALL LIMIT:  14.3°`;
 }
 
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Mission Path
-    ctx.strokeStyle = "rgba(42, 161, 152, 0.4)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    waypoints.forEach((wp, i) => {
-        if(i === 0) ctx.moveTo(wp.x, wp.y);
-        else ctx.lineTo(wp.x, wp.y);
-    });
-    ctx.lineTo(waypoints[0].x, waypoints[0].y); // Close loop
-    ctx.stroke();
+    // Mission Lines
+    ctx.strokeStyle = "rgba(42, 161, 152, 0.4)"; ctx.lineWidth = 1; ctx.beginPath();
+    waypoints.forEach((wp, i) => { if(i === 0) ctx.moveTo(wp.x, wp.y); else ctx.lineTo(wp.x, wp.y); });
+    ctx.lineTo(waypoints[0].x, waypoints[0].y); ctx.stroke();
 
-    // Corridor Radii and Waypoints
     waypoints.forEach((wp, i) => {
         ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2);
-        ctx.strokeStyle = (i === currentWPIndex || i === (currentWPIndex+1)%5) ? "rgba(133, 153, 0, 0.3)" : "rgba(88, 110, 117, 0.1)";
-        ctx.stroke();
-        ctx.fillStyle = (i === 0) ? "#268bd2" : "#cb4b16"; // Blue for start node
-        ctx.beginPath(); ctx.arc(wp.x, wp.y, 5, 0, Math.PI*2); ctx.fill();
-        ctx.fillText(i === 0 ? "START (0,0)" : i+1, wp.x + 8, wp.y - 8);
+        ctx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.5)" : "rgba(88, 110, 117, 0.2)"; ctx.stroke();
+        ctx.fillStyle = (i === 0) ? "#268bd2" : "#cb4b16"; ctx.beginPath(); ctx.arc(wp.x, wp.y, 4, 0, Math.PI*2); ctx.fill();
     });
 
-    // Boat and Sails
+    // Boat
     ctx.save();
     ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-boat.l*SCALE/2, -boat.w*SCALE/2, boat.l*SCALE, boat.w*SCALE);
-    ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(boat.l*SCALE/2, 0, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(boat.l*SCALE/2, 0, 3, 0, Math.PI*2); ctx.fill();
     
     boat.sails.forEach(s => {
-        ctx.save(); ctx.translate(s.x_off * SCALE, 0);
-        const awX = (wind.speed * Math.cos(wind.angle)) - boat.vx;
-        const awY = (wind.speed * Math.sin(wind.angle)) - boat.vy;
-        const awL = Math.atan2(awY, awX) - boat.theta;
-        ctx.rotate(awL + s.alpha);
+        ctx.save(); ctx.translate(s.x_off * SCALE, 0); ctx.rotate(s.angle - boat.theta);
         ctx.fillStyle = "rgba(42, 161, 152, 0.9)"; ctx.fillRect(-SCALE/2, -2, SCALE, 4);
-        ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(SCALE/2, 0, 2.5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(SCALE/2, 0, 2, 0, Math.PI*2); ctx.fill();
         ctx.restore();
     });
     ctx.restore();

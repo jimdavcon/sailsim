@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Proximity Trigger</title>
+    <title>Autonomous Sailboat: Origin Circuit</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; }
         #ui-sidebar { width: 10%; min-width: 150px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-right: 1px solid #586e75; flex-shrink: 0; }
@@ -18,7 +18,7 @@
 <body>
 
 <div id="ui-sidebar">
-    <h3>WP LOGIC</h3>
+    <h3>ORIGIN LOOP</h3>
     <div class="section">
         <div class="label">Wind Direction</div>
         <input type="range" id="windDir" min="0" max="360" value="45">
@@ -30,8 +30,8 @@
         <span id="wsVal">0</span> kts
     </div>
     <div class="section">
-        <div class="label">Trigger Mode</div>
-        <div id="telemetry">Radius Entry</div>
+        <div class="label">Navigation</div>
+        <div id="telemetry">Targeting Origin...</div>
     </div>
 </div>
 
@@ -42,7 +42,7 @@ const canvas = document.getElementById('simCanvas');
 const ctx = canvas.getContext('2d');
 const container = document.getElementById('world-container');
 
-let WORLD_SIZE_FT = 2000;
+let WORLD_SIZE_FT = 2200;
 let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
 const STALL_LIMIT = 0.25;
@@ -52,6 +52,7 @@ let waypoints = [];
 let currentWPIndex = 0;
 let tackState = 0; 
 
+// Initializing boat at Origin (0,0)
 const boat = {
     l: 6, w: 2, x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0,
     sails: [{ x_off: 3.5, alpha: 0, angle: 0 }, { x_off: -3.5, alpha: 0, angle: 0 }]
@@ -66,12 +67,14 @@ function resize() {
 
 function initSquareMission() {
     const d = 500 * PX_PER_FT;
-    const r = 120 * PX_PER_FT; // Slightly larger radius for better visual tracking
+    const r = 100 * PX_PER_FT; 
+    // Waypoints include the corners and a return-to-origin
     waypoints = [
-        { x:  d, y: -d, r: r },
-        { x:  d, y:  d, r: r },
-        { x: -d, y:  d, r: r },
-        { x: -d, y: -d, r: r }
+        { x:  d, y: -d, r: r, id: "WP1" },
+        { x:  d, y:  d, r: r, id: "WP2" },
+        { x: -d, y:  d, r: r, id: "WP3" },
+        { x: -d, y: -d, r: r, id: "WP4" },
+        { x:  0, y:  0, r: r, id: "ORIGIN" } // Return home before restarting loop
     ];
 }
 
@@ -82,23 +85,20 @@ function update(dt) {
     const pA = (currentWPIndex === 0) ? waypoints[waypoints.length - 1] : waypoints[currentWPIndex - 1];
     const pB = waypoints[currentWPIndex];
     
-    // Calculate distance to current target waypoint
     const distToTarget = Math.hypot(pB.x - boat.x, pB.y - boat.y);
 
-    // NEW TRIGGER: Check if boat has entered the circle radius
+    // TRIGGER: Proximity based
     if (distToTarget <= pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
         tackState = 0;
     }
 
-    // Geometry for steering logic
     const dx = pB.x - pA.x, dy = pB.y - pA.y;
     const pathLen = Math.hypot(dx, dy);
     const uX = dx / pathLen, uY = dy / pathLen;
     const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
 
-    // Boundary Logic
     if (Math.abs(cte) > pB.r) {
         tackState = (cte > 0) ? -1 : 1; 
     } else if (tackState !== 0) {
@@ -112,7 +112,6 @@ function update(dt) {
     let hErr = bearingToTarget - boat.theta;
     while(hErr > Math.PI) hErr -= 2*Math.PI; while(hErr < -Math.PI) hErr += 2*Math.PI;
 
-    // Bearing-based Priority
     const normErr = Math.min(1, Math.abs(hErr) / (Math.PI / 2)); 
     const steerGain = 2.0 + (5.0 * normErr); 
     const speedScalar = 1.0 - (1.0 * normErr); 
@@ -136,7 +135,7 @@ function update(dt) {
     });
 
     document.getElementById('telemetry').innerText = 
-        `DIST TO WP: ${(distToTarget/PX_PER_FT).toFixed(0)} ft\nBRG ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nSPEED: ${(speedScalar*100).toFixed(0)}%\nNEXT: WP${currentWPIndex + 1}`;
+        `TARGET: ${pB.id}\nDIST: ${(distToTarget/PX_PER_FT).toFixed(0)} ft\nBRG ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nSPEED: ${(speedScalar*100).toFixed(0)}%`;
 }
 
 function draw() {
@@ -146,12 +145,12 @@ function draw() {
     waypoints.forEach((wp, i) => {
         const prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
         ctx.setLineDash([8, 8]);
-        ctx.strokeStyle = "rgba(147, 161, 161, 0.2)";
+        ctx.strokeStyle = "rgba(147, 161, 161, 0.15)";
         ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(wp.x, wp.y); ctx.stroke();
         ctx.setLineDash([]);
         
         const dx = wp.x - prev.x, dy = wp.y - prev.y, ang = Math.atan2(dy, dx);
-        ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.2)";
+        ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.15)";
         ctx.beginPath();
         ctx.moveTo(prev.x + prev.r * Math.cos(ang + Math.PI/2), prev.y + prev.r * Math.sin(ang + Math.PI/2));
         ctx.lineTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
@@ -159,8 +158,15 @@ function draw() {
         ctx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
         ctx.stroke();
         
-        ctx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.4)";
+        ctx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.3)";
         ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
+        
+        // Label the origin
+        if(wp.id === "ORIGIN") {
+            ctx.fillStyle = "#93a1a1";
+            ctx.font = "10px Arial";
+            ctx.fillText("ORIGIN", wp.x + 10, wp.y - 10);
+        }
     });
 
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);

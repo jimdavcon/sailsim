@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Tacking Controller</title>
+    <title>Autonomous Sailboat: Corridor Tangent Analyzer</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; height: 100vh; }
         #world-container { width: 90%; height: 100%; position: relative; overflow: hidden; border-right: 1px solid #586e75; }
-        #ui-sidebar { width: 10%; height: 100%; background: #002b36; padding: 15px; box-sizing: border-box; display: flex; flex-direction: column; color: #859900; min-width: 160px; z-index: 10; }
+        #ui-sidebar { width: 10%; height: 100%; background: #002b36; padding: 15px; box-sizing: border-box; display: flex; flex-direction: column; color: #859900; min-width: 170px; z-index: 10; }
         .section { margin-bottom: 20px; border-bottom: 1px solid #073642; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
@@ -21,20 +21,17 @@
 </div>
 
 <div id="ui-sidebar">
-    <h3>TACK LOGIC</h3>
+    <h3>NAVIGATION</h3>
     <div class="section">
-        <div class="label">Wind Direction</div>
+        <div class="label">Wind Control</div>
         <input type="range" id="windDir" min="0" max="360" value="0">
-        <span id="wdVal">0</span>°
-    </div>
-    <div class="section">
-        <div class="label">Wind Speed</div>
+        Dir: <span id="wdVal">0</span>°<br>
         <input type="range" id="windSpd" min="0" max="40" value="15">
-        <span id="wsVal">15</span> kts
+        Spd: <span id="wsVal">15</span> kts
     </div>
     <div class="section">
-        <div class="label">Telemetry</div>
-        <div id="telemetry">Calculating Path...</div>
+        <div class="label">Path Metrics</div>
+        <div id="telemetry">Calculating...</div>
     </div>
 </div>
 
@@ -43,7 +40,7 @@ const canvas = document.getElementById('simCanvas');
 const ctx = canvas.getContext('2d');
 const container = document.getElementById('world-container');
 
-const SCALE = 35; 
+const SCALE = 35; // 1 meter/unit = 35 pixels
 const KNOTS_TO_FTS = 1.68781;
 const RHO_WATER = 1.99;
 const RHO_AIR = 0.00237; 
@@ -54,7 +51,7 @@ const MIN_RADIUS = 50 * SCALE;
 let wind = { angle: 0, speed: 15 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
-let tackState = 1; // 1 or -1, defining which "side" of the corridor we are aiming for
+let tackState = 1; 
 
 const boat = {
     l: 6, w: 1.5, mass: 50, inertia: 90,
@@ -65,17 +62,14 @@ const boat = {
 function initMission() {
     const w = container.clientWidth, h = container.clientHeight;
     waypoints = [{ x: 0, y: 0, r: MIN_RADIUS }];
-    
     for(let i=0; i<4; i++) {
-        let last = waypoints[i];
-        let nx, ny, dist;
+        let last = waypoints[i], nx, ny, dist;
         do {
             nx = (Math.random() - 0.5) * (w * 0.8);
             ny = (Math.random() - 0.5) * (h * 0.8);
             dist = Math.hypot(nx - last.x, ny - last.y);
         } while (dist < MIN_WP_DIST);
-        
-        waypoints.push({ x: nx, y: ny, r: MIN_RADIUS + Math.random() * 50 });
+        waypoints.push({ x: nx, y: ny, r: MIN_RADIUS + Math.random() * 40 });
     }
 }
 
@@ -88,8 +82,19 @@ document.getElementById('windSpd').oninput = (e) => {
     document.getElementById('wsVal').innerText = e.target.value;
 };
 
-function getNacaData(alpha) {
-    return { cl: 5.7 * alpha, cd: 0.015 + 0.05 * (5.7 * alpha)**2 };
+function getTangentPoints(c1, c2) {
+    const dx = c2.x - c1.x, dy = c2.y - c1.y;
+    const dist = Math.hypot(dx, dy);
+    const angle = Math.atan2(dy, dx);
+    const dr = c1.r - c2.r;
+    const angleOffset = Math.acos(dr / dist);
+
+    return [
+        { x1: c1.x + c1.r * Math.cos(angle + angleOffset), y1: c1.y + c1.r * Math.sin(angle + angleOffset),
+          x2: c2.x + c2.r * Math.cos(angle + angleOffset), y2: c2.y + c2.r * Math.sin(angle + angleOffset) },
+        { x1: c1.x + c1.r * Math.cos(angle - angleOffset), y1: c1.y + c1.r * Math.sin(angle - angleOffset),
+          x2: c2.x + c2.r * Math.cos(angle - angleOffset), y2: c2.y + c2.r * Math.sin(angle - angleOffset) }
+    ];
 }
 
 function update(dt) {
@@ -99,39 +104,28 @@ function update(dt) {
     let pA = waypoints[currentWPIndex];
     let pB = waypoints[(currentWPIndex + 1) % waypoints.length];
     
-    // 1. Progress Check (Along-track distance)
+    // Along-Track & Cross-Track Calculation
     const dx = pB.x - pA.x, dy = pB.y - pA.y;
     const pathLen = Math.hypot(dx, dy);
     const uX = dx / pathLen, uY = dy / pathLen;
-    const prog = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     
-    if (prog > pathLen) {
-        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-        tackState *= -1; // Optional: switch tack on new leg
-    }
-
-    // 2. Tacking Logic (Cross-track limit)
+    const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
-    const corridorR = pA.r + (prog/pathLen) * (pB.r - pA.r);
+    const corridorR = pA.r + (Math.max(0, Math.min(1, atd/pathLen))) * (pB.r - pA.r);
 
-    if (Math.abs(cte) > corridorR * 0.9) {
-        // If we hit the boundary, aim for the opposite boundary far ahead
-        tackState = (cte > 0) ? -1 : 1; 
-    }
+    if (atd > pathLen) currentWPIndex = (currentWPIndex + 1) % waypoints.length;
 
-    // Target a point on the opposite boundary 100ft ahead
-    const targetX = pA.x + (prog + 100) * uX + (tackState * corridorR) * (-uY);
-    const targetY = pA.y + (prog + 100) * uY + (tackState * corridorR) * uX;
-    const targetTheta = Math.atan2(targetY - boat.y, targetX - boat.x);
+    // Tacking logic
+    if (Math.abs(cte) > corridorR * 0.9) tackState = (cte > 0) ? -1 : 1; 
 
-    // 3. Controller & Physics (Differential)
-    let hError = targetTheta - boat.theta;
+    const targetX = pA.x + (atd + 80) * uX + (tackState * corridorR * 0.8) * (-uY);
+    const targetY = pA.y + (atd + 80) * uY + (tackState * corridorR * 0.8) * uX;
+    let hError = Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta;
     while (hError > Math.PI) hError -= 2 * Math.PI;
     while (hError < -Math.PI) hError += 2 * Math.PI;
     
+    // Physics
     const steerCmd = (hError * 1.5) - (boat.omega * 4.0);
-    const thrustBias = (Math.abs(hError) < 0.2) ? 0.21 : 0.05;
-
     let totalFx = 0, totalFy = 0, totalMz = 0;
     const twX = wind.speed * Math.cos(wind.angle), twY = wind.speed * Math.sin(wind.angle);
 
@@ -139,11 +133,11 @@ function update(dt) {
         const awX = twX - boat.vx, awY = twY - boat.vy;
         const awL = Math.atan2(awY, awX) - boat.theta;
         const thrustSign = (Math.sin(awL) > 0) ? -1 : 1;
-        s.alpha = Math.max(-STALL_ANGLE, Math.min(STALL_ANGLE, (thrustSign * thrustBias) + (i === 0 ? steerCmd : -steerCmd)));
-        const sd = getNacaData(s.alpha);
+        s.alpha = Math.max(-STALL_ANGLE, Math.min(STALL_ANGLE, (thrustSign * 0.2) + (i === 0 ? steerCmd : -steerCmd)));
+        const cl = 5.7 * s.alpha, cd = 0.015 + 0.05 * cl*cl;
         const qA = 0.5 * RHO_AIR * (awX*awX + awY*awY) * 4;
-        const lF = (qA*sd.cl*Math.sin(s.alpha) - qA*sd.cd*Math.cos(s.alpha));
-        const sFy = (-qA*sd.cl*Math.cos(s.alpha) - qA*sd.cd*Math.sin(s.alpha));
+        const lF = (qA*cl*Math.sin(s.alpha) - qA*cd*Math.cos(s.alpha));
+        const sFy = (-qA*cl*Math.cos(s.alpha) - qA*cd*Math.sin(s.alpha));
         totalFx += lF * Math.cos(awL) - sFy * Math.sin(awL);
         const bFy = lF * Math.sin(awL) + sFy * Math.cos(awL);
         totalFy += bFy; totalMz += (bFy * s.x_off);
@@ -151,11 +145,12 @@ function update(dt) {
     });
 
     const vL = boat.vx * cosT + boat.vy * sinT, vS = -boat.vx * sinT + boat.vy * cosT;
-    const hAlpha = Math.atan2(vS, vL), hD = getNacaData(hAlpha);
+    const hAlpha = Math.atan2(vS, vL);
+    const hCl = 5.7 * hAlpha, hCd = 0.015 + 0.05 * hCl*hCl;
     const hQ = 0.5 * RHO_WATER * (vL*vL + vS*vS) * (boat.l * 1.2);
-    totalFx += (hQ*hD.cl*Math.sin(hAlpha) - hQ*hD.cd*Math.cos(hAlpha));
-    totalFy += (-hQ*hD.cl*Math.cos(hAlpha) - hQ*hD.cd*Math.sin(hAlpha));
-    totalMz += hQ * boat.l * (-0.1 * hD.cl);
+    totalFx += (hQ*hCl*Math.sin(hAlpha) - hQ*hCd*Math.cos(hAlpha));
+    totalFy += (-hQ*hCl*Math.cos(hAlpha) - hQ*hCd*Math.sin(hAlpha));
+    totalMz += hQ * boat.l * (-0.1 * hCl);
 
     boat.vx += (totalFx * cosT - totalFy * sinT) / boat.mass * dt;
     boat.vy += (totalFx * sinT + totalFy * cosT) / boat.mass * dt;
@@ -163,12 +158,15 @@ function update(dt) {
     boat.x += boat.vx * dt * SCALE; boat.y += boat.vy * dt * SCALE;
     boat.theta += boat.omega * dt;
 
-    const halfW = w/2, halfH = h/2;
-    if (boat.x < -halfW) boat.x = halfW; else if (boat.x > halfW) boat.x = -halfW;
-    if (boat.y < -halfH) boat.y = halfH; else if (boat.y > halfH) boat.y = -halfH;
+    if (boat.x < -w/2) boat.x = w/2; else if (boat.x > w/2) boat.x = -w/2;
+    if (boat.y < -h/2) boat.y = h/2; else if (boat.y > h/2) boat.y = -h/2;
 
     document.getElementById('telemetry').innerText = 
-        `LEG: ${currentWPIndex+1} to ${ (currentWPIndex+2 > 5) ? 1 : currentWPIndex+2}\nCTE: ${(cte/SCALE).toFixed(1)} ft\nLIMIT: ±${(corridorR/SCALE).toFixed(1)} ft\nTACK: ${tackState > 0 ? 'PORT' : 'STBD'}`;
+        `LEG: ${currentWPIndex+1}→${(currentWPIndex+2>5)?1:currentWPIndex+2}\n` +
+        `ATD: ${(atd/SCALE).toFixed(1)} ft\n` +
+        `CTE: ${(cte/SCALE).toFixed(1)} ft\n` +
+        `RAD: ${(corridorR/SCALE).toFixed(0)} ft\n` +
+        `TACK: ${tackState > 0 ? 'PORT' : 'STBD'}`;
 }
 
 function draw() {
@@ -176,39 +174,38 @@ function draw() {
     const cx = canvas.width / 2, cy = canvas.height / 2;
     ctx.save(); ctx.translate(cx, cy);
 
-    // Mission Path & Boundaries
+    // Origin Markers
+    ctx.strokeStyle = "#073642"; ctx.beginPath(); ctx.moveTo(-20,0); ctx.lineTo(20,0); ctx.moveTo(0,-20); ctx.lineTo(0,20); ctx.stroke();
+
     waypoints.forEach((wp, i) => {
         const next = waypoints[(i + 1) % waypoints.length];
-        const dx = next.x - wp.x, dy = next.y - wp.y;
-        const ang = Math.atan2(dy, dx);
         
-        ctx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
-        
-        // Draw Corridor "Tube"
+        // Draw Tangents
+        const tangents = getTangentPoints(wp, next);
+        ctx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.6)" : "rgba(88, 110, 117, 0.2)";
         ctx.beginPath();
-        ctx.moveTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
-        ctx.lineTo(next.x + next.r * Math.cos(ang + Math.PI/2), next.y + next.r * Math.sin(ang + Math.PI/2));
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
-        ctx.lineTo(next.x + next.r * Math.cos(ang - Math.PI/2), next.y + next.r * Math.sin(ang - Math.PI/2));
+        tangents.forEach(t => { ctx.moveTo(t.x1, t.y1); ctx.lineTo(t.x2, t.y2); });
         ctx.stroke();
 
+        // Draw Centerline
+        ctx.setLineDash([5, 10]);
+        ctx.beginPath(); ctx.moveTo(wp.x, wp.y); ctx.lineTo(next.x, next.y); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Circles
+        ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
         ctx.fillStyle = (i === 0) ? "#268bd2" : "#cb4b16";
         ctx.beginPath(); ctx.arc(wp.x, wp.y, 4, 0, Math.PI*2); ctx.fill();
     });
 
     // Boat
-    ctx.save();
-    ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
+    ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-boat.l*SCALE/2, -boat.w*SCALE/2, boat.l*SCALE, boat.w*SCALE);
     boat.sails.forEach(s => {
         ctx.save(); ctx.translate(s.x_off * SCALE, 0); ctx.rotate(s.angle - boat.theta);
-        ctx.fillStyle = "rgba(42, 161, 152, 0.9)"; ctx.fillRect(-SCALE/2, -2, SCALE, 4);
-        ctx.restore();
+        ctx.fillStyle = "#2aa198"; ctx.fillRect(-SCALE/2, -2, SCALE, 4); ctx.restore();
     });
-    ctx.restore();
-    ctx.restore();
+    ctx.restore(); ctx.restore();
 }
 
 function loop() { update(0.016); draw(); requestAnimationFrame(loop); }

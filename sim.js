@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Shortest Path Logic</title>
+    <title>Autonomous Sailboat: Stable Circuit</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
         #ui-sidebar { width: 12%; min-width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
@@ -34,7 +34,7 @@
         <input type="range" id="windDir" min="0" max="360" value="45"> <span id="wdVal">45</span>°
         <input type="range" id="windSpd" min="0" max="40" value="0"> <span id="wsVal">0</span> kts
     </div>
-    <div id="telemetry">Status: Stable</div>
+    <div id="telemetry">Status: Initializing</div>
 </div>
 
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
@@ -56,7 +56,6 @@ let tackState = 0;
 
 const boat = { x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0, sails: [{ x_off: 3.5, alpha: 0, angle: 0 }, { x_off: -3.5, alpha: 0, angle: 0 }] };
 
-// HELPER: Normalize angle to +/- PI (180 deg)
 function norm(a) {
     while (a > Math.PI) a -= 2 * Math.PI;
     while (a < -Math.PI) a += 2 * Math.PI;
@@ -86,7 +85,11 @@ function update(dt) {
     const pB = waypoints[currentWPIndex];
     
     const distToTarget = Math.hypot(pB.x - boat.x, pB.y - boat.y);
-    if (distToTarget <= pB.r) { currentWPIndex = (currentWPIndex + 1) % waypoints.length; tackState = 0; }
+    if (distToTarget <= pB.r) { 
+        currentWPIndex = (currentWPIndex + 1) % waypoints.length; 
+        boat.omega *= 0.1; // ANTI-SPIN: Damping rotation on WP transition
+        tackState = 0; 
+    }
 
     const dx = pB.x - pA.x, dy = pB.y - pA.y;
     const pathLen = Math.hypot(dx, dy);
@@ -94,42 +97,37 @@ function update(dt) {
     const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
 
+    // Corridor Logic with Hysteresis
     if (Math.abs(cte) > pB.r) {
         tackState = (cte > 0) ? -1 : 1; 
     } else if (tackState !== 0) {
-        if ((tackState === 1 && cte > 0) || (tackState === -1 && cte < 0)) tackState = 0;
+        if (Math.abs(cte) < pB.r * 0.5) tackState = 0;
     }
 
-    const tx = (tackState === 0) ? pB.x : pA.x + (atd + 300 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
-    const ty = (tackState === 0) ? pB.y : pA.y + (atd + 300 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
+    const tx = (tackState === 0) ? pB.x : pA.x + (atd + 400 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
+    const ty = (tackState === 0) ? pB.y : pA.y + (atd + 400 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
 
-    // Shortest-path heading error calculation
     const targetBearing = Math.atan2(ty - boat.y, tx - boat.x);
     const hErr = norm(targetBearing - boat.theta);
     
-    // Priority blending
     const normErr = Math.min(1, Math.abs(hErr) / (Math.PI / 2)); 
-    const steerGain = 2.0 + (5.0 * normErr); 
+    const steerGain = 2.0 + (3.0 * normErr); 
     const speedScalar = 1.0 - (1.0 * normErr); 
     const baseSpeed = wind.speed * 0.4; 
 
     boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
-    boat.theta = norm(boat.theta + boat.omega * dt); // Keep boat orientation normalized
+    boat.theta = norm(boat.theta + boat.omega * dt); 
     
     boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
 
     boat.sails.forEach((s, i) => {
-        // Rel wind normalized to shortest path
         let relWind = norm((wind.angle + Math.PI) - boat.theta); 
-
         const speedAlpha = Math.sign(Math.sin(relWind)) * 0.21;
         const steerAlpha = hErr * -0.6;
-        
         s.alpha = (speedAlpha * (1 - normErr)) + (steerAlpha * normErr);
         s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, s.alpha));
-        
         s.angle = (wind.angle + Math.PI) + s.alpha;
 
         const pct = (s.alpha / STALL_LIMIT) * 50;
@@ -138,7 +136,7 @@ function update(dt) {
         bar.style.background = Math.abs(s.alpha) >= STALL_LIMIT * 0.95 ? "#dc322f" : "#2aa198";
     });
 
-    document.getElementById('telemetry').innerText = `BRG ERR: ${(hErr*180/Math.PI).toFixed(0)}°\nSPEED: ${(speedScalar*100).toFixed(0)}%`;
+    document.getElementById('telemetry').innerText = `TARGET: ${pB.id}\nBRG ERR: ${(hErr*180/Math.PI).toFixed(0)}°\nSPD: ${(baseSpeed/KNOTS_TO_FTS).toFixed(1)} kts`;
 }
 
 function draw() {

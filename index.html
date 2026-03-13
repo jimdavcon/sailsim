@@ -2,6 +2,203 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <title>Autonomous Sailboat: Linear Priority Circuit</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; height: 100vh; }
+        #world-container { width: 85%; height: 100%; position: relative; overflow: hidden; border-right: 1px solid #586e75; }
+        #ui-sidebar { width: 15%; height: 100%; background: #002b36; padding: 15px; box-sizing: border-box; color: #859900; min-width: 180px; }
+        .section { margin-bottom: 20px; border-bottom: 1px solid #073642; padding-bottom: 10px; }
+        .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
+        input { width: 100%; accent-color: #859900; cursor: pointer; }
+        #telemetry { color: #268bd2; font-size: 11px; white-space: pre-wrap; line-height: 1.6; }
+        h3 { font-size: 14px; margin: 0 0 15px 0; color: #b58900; border-bottom: 2px solid #b58900; }
+    </style>
+</head>
+<body>
+
+<div id="world-container"><canvas id="simCanvas"></canvas></div>
+
+<div id="ui-sidebar">
+    <h3>CIRCUIT CTRL</h3>
+    <div class="section">
+        <div class="label">Wind Direction</div>
+        <input type="range" id="windDir" min="0" max="360" value="45">
+        <span id="wdVal">45</span>°
+    </div>
+    <div class="section">
+        <div class="label">Wind Speed</div>
+        <input type="range" id="windSpd" min="0" max="40" value="0">
+        <span id="wsVal">0</span> kts
+    </div>
+    <div class="section">
+        <div class="label">Dynamic Priority</div>
+        <div id="telemetry">Calculating...</div>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+const container = document.getElementById('world-container');
+
+let WORLD_SIZE_FT = 2000;
+let PX_PER_FT;
+const KNOTS_TO_FTS = 1.68781;
+const STALL_LIMIT = 0.25;
+
+let wind = { angle: 45 * Math.PI/180, speed: 0 };
+let waypoints = [];
+let currentWPIndex = 0;
+let tackState = 0; 
+
+const boat = {
+    l: 6, w: 2, x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0,
+    sails: [{ x_off: 3.5, alpha: 0, angle: 0 }, { x_off: -3.5, alpha: 0, angle: 0 }]
+};
+
+function resize() {
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+    PX_PER_FT = Math.min(canvas.width, canvas.height) / WORLD_SIZE_FT;
+    initSquareMission();
+}
+
+function initSquareMission() {
+    const d = 500 * PX_PER_FT;
+    const r = 100 * PX_PER_FT; 
+    waypoints = [
+        { x:  d, y: -d, r: r }, // WP1
+        { x:  d, y:  d, r: r }, // WP2
+        { x: -d, y:  d, r: r }, // WP3
+        { x: -d, y: -d, r: r }  // WP4
+    ];
+}
+
+document.getElementById('windDir').oninput = e => { wind.angle = e.target.value * Math.PI/180; document.getElementById('wdVal').innerText = e.target.value; };
+document.getElementById('windSpd').oninput = e => { wind.speed = e.target.value * KNOTS_TO_FTS; document.getElementById('wsVal').innerText = e.target.value; };
+
+function update(dt) {
+    // Current Leg Geometry
+    const pA = (currentWPIndex === 0) ? waypoints[waypoints.length - 1] : waypoints[currentWPIndex - 1];
+    const pB = waypoints[currentWPIndex];
+    
+    const dx = pB.x - pA.x, dy = pB.y - pA.y;
+    const pathLen = Math.hypot(dx, dy);
+    const uX = dx / pathLen, uY = dy / pathLen;
+    
+    const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
+    const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
+    const distToDest = Math.hypot(pB.x - boat.x, pB.y - boat.y);
+
+    // CONTINUOUS CIRCUIT: Switch WP and Loop index
+    if (atd >= pathLen && distToDest <= pB.r) {
+        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
+        tackState = 0;
+    }
+
+    // Boundary Logic
+    if (Math.abs(cte) > pB.r) {
+        tackState = (cte > 0) ? -1 : 1; 
+    } else if (tackState !== 0) {
+        if ((tackState === 1 && cte > 0) || (tackState === -1 && cte < 0)) tackState = 0;
+    }
+
+    // Guidance Target
+    let targetX = (tackState === 0) ? pB.x : pA.x + (atd + 300 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
+    let targetY = (tackState === 0) ? pB.y : pA.y + (atd + 300 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
+
+    let hErr = Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta;
+    while(hErr > Math.PI) hErr -= 2*Math.PI; while(hErr < -Math.PI) hErr += 2*Math.PI;
+
+    // --- LINEAR PRIORITY ADJUSTMENT ---
+    // Error is normalized from 0 to PI. We use a sensitivity factor.
+    const normErr = Math.min(1, Math.abs(hErr) / (Math.PI / 2)); 
+    
+    // As error goes up, steering gain increases and speed decreases
+    const steerGain = 1.5 + (3.5 * normErr); 
+    const speedScalar = 1.2 - (0.9 * normErr); 
+
+    boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
+    boat.theta += boat.omega * dt;
+    
+    const baseSpeed = 1.5 + (wind.speed * 0.3); 
+    boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
+    boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
+    boat.x += boat.vx; boat.y += boat.vy;
+
+    // Sail Alpha blending
+    boat.sails.forEach((s) => {
+        const wRel = wind.angle - boat.theta;
+        const speedAlpha = Math.sign(Math.sin(wRel)) * -0.21;
+        const steerAlpha = hErr * 0.5;
+        // Blend sail angle based on priority
+        s.alpha = (speedAlpha * (1 - normErr)) + (steerAlpha * normErr);
+        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, s.alpha));
+        s.angle = wind.angle + s.alpha;
+    });
+
+    document.getElementById('telemetry').innerText = 
+        `HDG ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nSTEER PRIO: ${(normErr*100).toFixed(0)}%\nSPEED PRIO: ${((1-normErr)*100).toFixed(0)}%\nLEG: ${currentWPIndex + 1}`;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save(); ctx.translate(canvas.width / 2, canvas.height / 2);
+
+    // Geometry
+    waypoints.forEach((wp, i) => {
+        const prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
+        
+        ctx.setLineDash([10, 10]);
+        ctx.strokeStyle = "rgba(147, 161, 161, 0.2)";
+        ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(wp.x, wp.y); ctx.stroke();
+        ctx.setLineDash([]);
+
+        const dx = wp.x - prev.x, dy = wp.y - prev.y, ang = Math.atan2(dy, dx);
+        ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.2)";
+        ctx.beginPath();
+        ctx.moveTo(prev.x + prev.r * Math.cos(ang + Math.PI/2), prev.y + prev.r * Math.sin(ang + Math.PI/2));
+        ctx.lineTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
+        ctx.moveTo(prev.x + prev.r * Math.cos(ang - Math.PI/2), prev.y + prev.r * Math.sin(ang - Math.PI/2));
+        ctx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
+        ctx.stroke();
+
+        ctx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.4)";
+        ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
+        ctx.fillStyle = (i === currentWPIndex) ? "#268bd2" : "#586e75";
+        ctx.beginPath(); ctx.arc(wp.x, wp.y, 4, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Boat
+    ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
+    ctx.strokeStyle = "#eee8d5"; ctx.lineWidth = 2;
+    ctx.strokeRect(-12, -6, 24, 12);
+    ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(12, 0, 3, 0, Math.PI*2); ctx.fill();
+    boat.sails.forEach(s => {
+        ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
+        ctx.fillStyle = "rgba(42, 161, 152, 0.8)"; ctx.fillRect(-10, -2, 20, 4);
+        ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(10, 0, 2, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+    });
+    ctx.restore();
+
+    // Wind HUD
+    ctx.restore(); ctx.save();
+    ctx.translate(50, 50);
+    ctx.rotate(wind.angle);
+    ctx.strokeStyle = "#268bd2";
+    ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(20, 0); ctx.lineTo(10, -5); ctx.moveTo(20,0); ctx.lineTo(10, 5); ctx.stroke();
+    ctx.restore();
+}
+
+function loop() { update(0.016); draw(); requestAnimationFrame(loop); }
+window.onresize = resize; resize(); loop();
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
     <title>Autonomous Sailboat: Mission Geometry Restored</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; height: 100vh; }

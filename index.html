@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Bow & Wing Markers</title>
+    <title>Autonomous Sailboat: Leading Edge Alignment</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
         #ui-sidebar { width: 12%; min-width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
@@ -109,12 +109,24 @@ function update(dt) {
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
 
+    // IMPROVED WING ORIENTATION LOGIC
     boat.sails.forEach((s, i) => {
-        const wRel = wind.angle - boat.theta;
-        const sAlpha = (Math.sign(Math.sin(wRel)) * -0.21 * (1 - normErr)) + ((((hErr + Math.PI) % (2 * Math.PI)) - Math.PI) * 0.6 * normErr);
-        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, sAlpha));
-        s.angle = wind.angle + s.alpha;
+        // Find the angle of wind relative to the boat
+        let relWind = (wind.angle - Math.PI) - boat.theta; 
+        while(relWind > Math.PI) relWind -= 2*Math.PI;
+        while(relWind < -Math.PI) relWind += 2*Math.PI;
+
+        // Calculate target AoA based on speed/steer priority
+        const speedAlpha = Math.sign(Math.sin(relWind)) * 0.21;
+        const steerAlpha = (((hErr + Math.PI) % (2 * Math.PI)) - Math.PI) * -0.6;
         
+        s.alpha = (speedAlpha * (1 - normErr)) + (steerAlpha * normErr);
+        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, s.alpha));
+        
+        // Final wing angle: Wind direction + Alpha
+        // This ensures the red dot (leading edge) points into the wind
+        s.angle = (wind.angle + Math.PI) + s.alpha;
+
         const pct = (s.alpha / STALL_LIMIT) * 50;
         const bar = document.getElementById(`bar${i}`);
         bar.style.width = Math.abs(pct) + "%"; bar.style.left = pct < 0 ? (50 + pct) + "%" : "50%";
@@ -148,18 +160,13 @@ function draw() {
         ctx.restore();
     });
 
-    // BOAT DRAWING
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-12, -6, 24, 12);
-    
-    // RED DOT ON BOW
     ctx.fillStyle = "#dc322f"; ctx.beginPath(); ctx.arc(12, 0, 2.5, 0, Math.PI*2); ctx.fill();
 
     boat.sails.forEach(s => {
         ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
         ctx.fillStyle = "rgba(42, 161, 152, 0.8)"; ctx.fillRect(-10, -2, 20, 4);
-        
-        // RED DOT ON LEADING EDGE (Assuming leading edge is the +X side of the wing)
         ctx.fillStyle = "#dc322f"; ctx.beginPath(); ctx.arc(10, 0, 2, 0, Math.PI*2); ctx.fill();
         ctx.restore();
     });

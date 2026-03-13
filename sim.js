@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Stable Circuit</title>
+    <title>Autonomous Sailboat: Zero-CTE Stability</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
         #ui-sidebar { width: 12%; min-width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
@@ -34,7 +34,7 @@
         <input type="range" id="windDir" min="0" max="360" value="45"> <span id="wdVal">45</span>°
         <input type="range" id="windSpd" min="0" max="40" value="0"> <span id="wsVal">0</span> kts
     </div>
-    <div id="telemetry">Status: Initializing</div>
+    <div id="telemetry">Status: Active</div>
 </div>
 
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
@@ -87,7 +87,7 @@ function update(dt) {
     const distToTarget = Math.hypot(pB.x - boat.x, pB.y - boat.y);
     if (distToTarget <= pB.r) { 
         currentWPIndex = (currentWPIndex + 1) % waypoints.length; 
-        boat.omega *= 0.1; // ANTI-SPIN: Damping rotation on WP transition
+        boat.omega *= 0.1; 
         tackState = 0; 
     }
 
@@ -97,15 +97,25 @@ function update(dt) {
     const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
 
-    // Corridor Logic with Hysteresis
+    // IMPROVED LOGIC: If we are inside the corridor, tackState is 0. 
+    // This removes the "switch" at CTE=0 because 0 is solidly inside.
     if (Math.abs(cte) > pB.r) {
         tackState = (cte > 0) ? -1 : 1; 
-    } else if (tackState !== 0) {
-        if (Math.abs(cte) < pB.r * 0.5) tackState = 0;
+    } else {
+        tackState = 0; // Solidly inside = follow the line
     }
 
-    const tx = (tackState === 0) ? pB.x : pA.x + (atd + 400 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
-    const ty = (tackState === 0) ? pB.y : pA.y + (atd + 400 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
+    // Define target based on being inside or outside corridor
+    let tx, ty;
+    if (tackState === 0) {
+        // Point further down the current path line
+        tx = pA.x + (atd + 400 * PX_PER_FT) * uX;
+        ty = pA.y + (atd + 400 * PX_PER_FT) * uY;
+    } else {
+        // Point on the "wall" of the corridor to steer back in
+        tx = pA.x + (atd + 400 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
+        ty = pA.y + (atd + 400 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
+    }
 
     const targetBearing = Math.atan2(ty - boat.y, tx - boat.x);
     const hErr = norm(targetBearing - boat.theta);
@@ -136,7 +146,7 @@ function update(dt) {
         bar.style.background = Math.abs(s.alpha) >= STALL_LIMIT * 0.95 ? "#dc322f" : "#2aa198";
     });
 
-    document.getElementById('telemetry').innerText = `TARGET: ${pB.id}\nBRG ERR: ${(hErr*180/Math.PI).toFixed(0)}°\nSPD: ${(baseSpeed/KNOTS_TO_FTS).toFixed(1)} kts`;
+    document.getElementById('telemetry').innerText = `CTE: ${(cte/PX_PER_FT).toFixed(1)}ft\nMODE: ${tackState === 0 ? 'LINE' : 'TACK'}\nSPEED: ${(baseSpeed/KNOTS_TO_FTS).toFixed(1)}kts`;
 }
 
 function draw() {

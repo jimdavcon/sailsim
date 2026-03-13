@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Full Guidance Restored</title>
+    <title>Autonomous Sailboat: Bow & Wing Markers</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
         #ui-sidebar { width: 12%; min-width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
@@ -53,7 +53,6 @@ let wind = { angle: 45 * Math.PI/180, speed: 0 };
 let waypoints = [];
 let currentWPIndex = 0;
 let tackState = 0; 
-let lastTarget = { x: 0, y: 0 };
 
 const boat = { x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0, sails: [{ x_off: 3.5, alpha: 0, angle: 0 }, { x_off: -3.5, alpha: 0, angle: 0 }] };
 
@@ -94,10 +93,10 @@ function update(dt) {
         if ((tackState === 1 && cte > 0) || (tackState === -1 && cte < 0)) tackState = 0;
     }
 
-    lastTarget.x = (tackState === 0) ? pB.x : pA.x + (atd + 300 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
-    lastTarget.y = (tackState === 0) ? pB.y : pA.y + (atd + 300 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
+    const tx = (tackState === 0) ? pB.x : pA.x + (atd + 300 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
+    const ty = (tackState === 0) ? pB.y : pA.y + (atd + 300 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
 
-    const hErr = Math.atan2(lastTarget.y - boat.y, lastTarget.x - boat.x) - boat.theta;
+    const hErr = Math.atan2(ty - boat.y, tx - boat.x) - boat.theta;
     const normErr = Math.min(1, Math.abs(((hErr + Math.PI) % (2 * Math.PI)) - Math.PI) / (Math.PI / 2)); 
     
     const steerGain = 2.0 + (5.0 * normErr); 
@@ -115,11 +114,14 @@ function update(dt) {
         const sAlpha = (Math.sign(Math.sin(wRel)) * -0.21 * (1 - normErr)) + ((((hErr + Math.PI) % (2 * Math.PI)) - Math.PI) * 0.6 * normErr);
         s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, sAlpha));
         s.angle = wind.angle + s.alpha;
+        
         const pct = (s.alpha / STALL_LIMIT) * 50;
         const bar = document.getElementById(`bar${i}`);
         bar.style.width = Math.abs(pct) + "%"; bar.style.left = pct < 0 ? (50 + pct) + "%" : "50%";
         bar.style.background = Math.abs(s.alpha) >= STALL_LIMIT * 0.95 ? "#dc322f" : "#2aa198";
     });
+
+    document.getElementById('telemetry').innerText = `NEXT: ${pB.id}\nWP DIST: ${(distToTarget/PX_PER_FT).toFixed(0)}ft\nCTE: ${(cte/PX_PER_FT).toFixed(0)}ft`;
 }
 
 function draw() {
@@ -128,9 +130,8 @@ function draw() {
 
     waypoints.forEach((wp, i) => {
         const prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
-        
-        // 1. CORRIDOR LINES (Side boundaries)
         const dx = wp.x - prev.x, dy = wp.y - prev.y, ang = Math.atan2(dy, dx);
+        
         ctx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
         ctx.beginPath();
         ctx.moveTo(prev.x + wp.r * Math.cos(ang + Math.PI/2), prev.y + wp.r * Math.sin(ang + Math.PI/2));
@@ -139,25 +140,27 @@ function draw() {
         ctx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
         ctx.stroke();
 
-        // 2. WAYPOINT CIRCLES
         ctx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.2)";
         ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
 
-        // 3. WIND ARROWS
         ctx.save(); ctx.translate(wp.x, wp.y); ctx.rotate(wind.angle);
         ctx.strokeStyle = "#268bd2"; ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(20, 0); ctx.lineTo(12, -5); ctx.moveTo(20, 0); ctx.lineTo(12, 5); ctx.stroke();
         ctx.restore();
     });
 
-    // 4. RED TARGET DOT
-    ctx.fillStyle = "#dc322f"; ctx.beginPath(); ctx.arc(lastTarget.x, lastTarget.y, 4, 0, Math.PI*2); ctx.fill();
-
-    // 5. BOAT
+    // BOAT DRAWING
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-12, -6, 24, 12);
+    
+    // RED DOT ON BOW
+    ctx.fillStyle = "#dc322f"; ctx.beginPath(); ctx.arc(12, 0, 2.5, 0, Math.PI*2); ctx.fill();
+
     boat.sails.forEach(s => {
         ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
         ctx.fillStyle = "rgba(42, 161, 152, 0.8)"; ctx.fillRect(-10, -2, 20, 4);
+        
+        // RED DOT ON LEADING EDGE (Assuming leading edge is the +X side of the wing)
+        ctx.fillStyle = "#dc322f"; ctx.beginPath(); ctx.arc(10, 0, 2, 0, Math.PI*2); ctx.fill();
         ctx.restore();
     });
     ctx.restore(); ctx.restore();

@@ -2,11 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Zero-CTE Stability</title>
+    <title>Sailboat: Stability Debugger</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
-        #ui-sidebar { width: 12%; min-width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
-        #world-container { flex-grow: 1; height: 100%; background: #002b36; overflow: hidden; }
+        #ui-sidebar { width: 12%; min-width: 180px; height: calc(100% - 150px); background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
+        #world-container { flex-grow: 1; height: calc(100% - 150px); background: #002b36; overflow: hidden; position: relative; }
+        #chart-container { position: absolute; bottom: 0; left: 0; width: 100%; height: 150px; background: #001e26; border-top: 2px solid #586e75; z-index: 10; }
         canvas { display: block; width: 100%; height: 100%; }
         .section { margin-bottom: 20px; border-bottom: 1px solid #586e75; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
@@ -17,6 +18,7 @@
         .center-line { position: absolute; left: 50%; top: -2px; height: 12px; width: 1px; background: #93a1a1; }
         #telemetry { color: #268bd2; font-size: 11px; white-space: pre-wrap; line-height: 1.4; }
         h3 { font-size: 13px; margin: 0 0 15px 0; color: #b58900; }
+        .chart-legend { position: absolute; top: 5px; right: 10px; font-size: 10px; color: #93a1a1; }
     </style>
 </head>
 <body>
@@ -30,7 +32,7 @@
         <div class="wing-row"><div class="bar-bg"><div id="bar1" class="bar-fill"></div><div class="center-line"></div></div></div>
     </div>
     <div class="section">
-        <div class="label">Environment</div>
+        <div class="label">Wind</div>
         <input type="range" id="windDir" min="0" max="360" value="45"> <span id="wdVal">45</span>°
         <input type="range" id="windSpd" min="0" max="40" value="0"> <span id="wsVal">0</span> kts
     </div>
@@ -38,10 +40,16 @@
 </div>
 
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
+<div id="chart-container">
+    <div class="chart-legend"><span style="color:#b58900">■ CTE</span> | <span style="color:#2aa198">■ BEARING CMD</span></div>
+    <canvas id="chartCanvas"></canvas>
+</div>
 
 <script>
 const canvas = document.getElementById('simCanvas');
 const ctx = canvas.getContext('2d');
+const chartCanvas = document.getElementById('chartCanvas');
+const chartCtx = chartCanvas.getContext('2d');
 const container = document.getElementById('world-container');
 
 let WORLD_SIZE_FT = 2200;
@@ -53,6 +61,7 @@ let wind = { angle: 45 * Math.PI/180, speed: 0 };
 let waypoints = [];
 let currentWPIndex = 0;
 let tackState = 0; 
+let history = [];
 
 const boat = { x: 0, y: 0, theta: 0, vx: 0, vy: 0, omega: 0, sails: [{ x_off: 3.5, alpha: 0, angle: 0 }, { x_off: -3.5, alpha: 0, angle: 0 }] };
 
@@ -64,6 +73,7 @@ function norm(a) {
 
 function resize() {
     canvas.width = container.clientWidth; canvas.height = container.clientHeight;
+    chartCanvas.width = window.innerWidth; chartCanvas.height = 150;
     PX_PER_FT = Math.min(canvas.width, canvas.height) / WORLD_SIZE_FT;
     initSquareMission();
 }
@@ -97,29 +107,19 @@ function update(dt) {
     const atd = (boat.x - pA.x) * uX + (boat.y - pA.y) * uY;
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
 
-    // IMPROVED LOGIC: If we are inside the corridor, tackState is 0. 
-    // This removes the "switch" at CTE=0 because 0 is solidly inside.
-    if (Math.abs(cte) > pB.r) {
-        tackState = (cte > 0) ? -1 : 1; 
-    } else {
-        tackState = 0; // Solidly inside = follow the line
-    }
+    if (Math.abs(cte) > pB.r) tackState = (cte > 0) ? -1 : 1; 
+    else tackState = 0;
 
-    // Define target based on being inside or outside corridor
-    let tx, ty;
-    if (tackState === 0) {
-        // Point further down the current path line
-        tx = pA.x + (atd + 400 * PX_PER_FT) * uX;
-        ty = pA.y + (atd + 400 * PX_PER_FT) * uY;
-    } else {
-        // Point on the "wall" of the corridor to steer back in
-        tx = pA.x + (atd + 400 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
-        ty = pA.y + (atd + 400 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
-    }
+    let tx = pA.x + (atd + 400 * PX_PER_FT) * uX + (tackState * pB.r) * (-uY);
+    let ty = pA.y + (atd + 400 * PX_PER_FT) * uY + (tackState * pB.r) * uX;
 
     const targetBearing = Math.atan2(ty - boat.y, tx - boat.x);
     const hErr = norm(targetBearing - boat.theta);
     
+    // Log data for stripchart
+    history.push({ cte: cte / PX_PER_FT, bearing: targetBearing });
+    if (history.length > chartCanvas.width) history.shift();
+
     const normErr = Math.min(1, Math.abs(hErr) / (Math.PI / 2)); 
     const steerGain = 2.0 + (3.0 * normErr); 
     const speedScalar = 1.0 - (1.0 * normErr); 
@@ -127,26 +127,19 @@ function update(dt) {
 
     boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
     boat.theta = norm(boat.theta + boat.omega * dt); 
-    
     boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
 
     boat.sails.forEach((s, i) => {
         let relWind = norm((wind.angle + Math.PI) - boat.theta); 
-        const speedAlpha = Math.sign(Math.sin(relWind)) * 0.21;
-        const steerAlpha = hErr * -0.6;
-        s.alpha = (speedAlpha * (1 - normErr)) + (steerAlpha * normErr);
-        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, s.alpha));
+        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, (Math.sign(Math.sin(relWind)) * 0.21 * (1 - normErr)) + (hErr * -0.6 * normErr)));
         s.angle = (wind.angle + Math.PI) + s.alpha;
-
         const pct = (s.alpha / STALL_LIMIT) * 50;
         const bar = document.getElementById(`bar${i}`);
         bar.style.width = Math.abs(pct) + "%"; bar.style.left = pct < 0 ? (50 + pct) + "%" : "50%";
         bar.style.background = Math.abs(s.alpha) >= STALL_LIMIT * 0.95 ? "#dc322f" : "#2aa198";
     });
-
-    document.getElementById('telemetry').innerText = `CTE: ${(cte/PX_PER_FT).toFixed(1)}ft\nMODE: ${tackState === 0 ? 'LINE' : 'TACK'}\nSPEED: ${(baseSpeed/KNOTS_TO_FTS).toFixed(1)}kts`;
 }
 
 function draw() {
@@ -156,7 +149,6 @@ function draw() {
     waypoints.forEach((wp, i) => {
         const prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
         const dx = wp.x - prev.x, dy = wp.y - prev.y, ang = Math.atan2(dy, dx);
-        
         ctx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
         ctx.beginPath();
         ctx.moveTo(prev.x + wp.r * Math.cos(ang + Math.PI/2), prev.y + wp.r * Math.sin(ang + Math.PI/2));
@@ -176,7 +168,6 @@ function draw() {
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-12, -6, 24, 12);
     ctx.fillStyle = "#dc322f"; ctx.beginPath(); ctx.arc(12, 0, 2.5, 0, Math.PI*2); ctx.fill();
-
     boat.sails.forEach(s => {
         ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
         ctx.fillStyle = "rgba(42, 161, 152, 0.8)"; ctx.fillRect(-10, -2, 20, 4);
@@ -184,6 +175,27 @@ function draw() {
         ctx.restore();
     });
     ctx.restore(); ctx.restore();
+
+    // DRAW STRIPCHART
+    chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+    chartCtx.strokeStyle = "#586e75"; chartCtx.beginPath(); chartCtx.moveTo(0, 75); chartCtx.lineTo(chartCanvas.width, 75); chartCtx.stroke();
+    
+    chartCtx.lineWidth = 2;
+    // Plot CTE (Yellow)
+    chartCtx.strokeStyle = "#b58900"; chartCtx.beginPath();
+    history.forEach((pt, i) => {
+        let y = 75 - (pt.cte * 0.5); // Scale CTE to fit
+        if (i === 0) chartCtx.moveTo(i, y); else chartCtx.lineTo(i, y);
+    });
+    chartCtx.stroke();
+
+    // Plot Bearing Command (Cyan)
+    chartCtx.strokeStyle = "#2aa198"; chartCtx.beginPath();
+    history.forEach((pt, i) => {
+        let y = 75 - (pt.bearing * (70/Math.PI)); // Scale +/- PI to chart height
+        if (i === 0) chartCtx.moveTo(i, y); else chartCtx.lineTo(i, y);
+    });
+    chartCtx.stroke();
 }
 
 function loop() { update(0.016); draw(); requestAnimationFrame(loop); }

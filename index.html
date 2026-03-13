@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Priority Control</title>
+    <title>Autonomous Sailboat: Full Wind Range</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; height: 100vh; }
         #world-container { width: 90%; height: 100%; position: relative; overflow: hidden; border-right: 1px solid #586e75; }
@@ -19,17 +19,20 @@
 <div id="world-container"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3>PRIORITY CTRL</h3>
+    <h3>WIND & PRIORITY</h3>
     <div class="section">
-        <div class="label">Wind Control</div>
+        <div class="label">Wind Direction</div>
         <input type="range" id="windDir" min="0" max="360" value="45">
-        Dir: <span id="wdVal">45</span>°<br>
-        <input type="range" id="windSpd" min="0" max="40" value="18">
-        Spd: <span id="wsVal">18</span> kts
+        <span id="wdVal">45</span>°
     </div>
     <div class="section">
-        <div class="label">Status</div>
-        <div id="telemetry">Initializing...</div>
+        <div class="label">Wind Speed</div>
+        <input type="range" id="windSpd" min="0" max="40" value="15">
+        <span id="wsVal">15</span> kts
+    </div>
+    <div class="section">
+        <div class="label">Real-time Data</div>
+        <div id="telemetry">Ready...</div>
     </div>
 </div>
 
@@ -43,7 +46,7 @@ let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
 const STALL_LIMIT = 0.25;
 
-let wind = { angle: 45 * Math.PI/180, speed: 18 * KNOTS_TO_FTS };
+let wind = { angle: 45 * Math.PI/180, speed: 15 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
 let tackState = 0; 
@@ -72,7 +75,10 @@ function initSquareMission() {
 }
 
 document.getElementById('windDir').oninput = e => { wind.angle = e.target.value * Math.PI/180; document.getElementById('wdVal').innerText = e.target.value; };
-document.getElementById('windSpd').oninput = e => { wind.speed = e.target.value * KNOTS_TO_FTS; document.getElementById('wsVal').innerText = e.target.value; };
+document.getElementById('windSpd').oninput = e => { 
+    wind.speed = e.target.value * KNOTS_TO_FTS; 
+    document.getElementById('wsVal').innerText = e.target.value; 
+};
 
 function update(dt) {
     const pA = (currentWPIndex === 0) ? {x:0, y:0, r:100*PX_PER_FT} : waypoints[currentWPIndex - 1];
@@ -96,22 +102,16 @@ function update(dt) {
     let speedScalar = 1.0;
 
     if (Math.abs(cte) > pB.r) {
-        // BOUNDARY EXCEEDED: Priority = STEERING
         tackState = (cte > 0) ? -1 : 1; 
-        steerGain = 4.5;    // Aggressive turn authority
-        speedScalar = 0.4;  // Deprioritize speed to prevent overshoot
+        steerGain = 4.5;    
+        speedScalar = 0.4;  
     } else if (tackState !== 0) {
-        // Crossing back to centerline
-        if ((tackState === 1 && cte > 0) || (tackState === -1 && cte < 0)) {
-            tackState = 0;
-        }
+        if ((tackState === 1 && cte > 0) || (tackState === -1 && cte < 0)) tackState = 0;
     }
 
     let targetX, targetY;
     if (tackState === 0) {
-        // INSIDE CORRIDOR: Priority = SPEED
         targetX = pB.x; targetY = pB.y;
-        speedScalar = 1.2; // Maximize forward effort
     } else {
         const lookAhead = 250 * PX_PER_FT;
         targetX = pA.x + (atd + lookAhead) * uX + (tackState * pB.r) * (-uY);
@@ -121,26 +121,24 @@ function update(dt) {
     let hErr = Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta;
     while(hErr > Math.PI) hErr -= 2*Math.PI; while(hErr < -Math.PI) hErr += 2*Math.PI;
 
-    // Control and Physics
     boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
     boat.theta += boat.omega * dt;
     
-    const baseSpeed = 5.0 + wind.speed * 0.1;
+    // Boat speed is now more sensitive to wind speed
+    const baseSpeed = 2.0 + (wind.speed * 0.25); 
     boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
 
-    // Wingsail priority adjustment
-    boat.sails.forEach((s, i) => {
-        const windRelAngle = Math.atan2(wind.speed * Math.sin(wind.angle), wind.speed * Math.cos(wind.angle)) - boat.theta;
-        // In steering priority, sails act as air-brakes/rudders
-        const alphaBias = (tackState !== 0) ? (hErr * 0.5) : (Math.sign(Math.sin(windRelAngle)) * -0.21);
-        s.alpha = Math.max(-STALL_LIMIT, Math.min(STALL_LIMIT, alphaBias));
-        s.angle = Math.atan2(wind.speed * Math.sin(wind.angle), wind.speed * Math.cos(wind.angle)) + s.alpha;
+    // Visual Sail Position
+    boat.sails.forEach((s) => {
+        const wRel = Math.atan2(Math.sin(wind.angle), Math.cos(wind.angle)) - boat.theta;
+        s.alpha = (tackState !== 0) ? (hErr * 0.4) : (Math.sign(Math.sin(wRel)) * -0.2);
+        s.angle = wind.angle + s.alpha;
     });
 
     document.getElementById('telemetry').innerText = 
-        `DEST: WP${currentWPIndex+1}\nPRIORITY: ${tackState === 0 ? 'SPEED' : 'STEERING'}\nATD: ${(atd/PX_PER_FT).toFixed(0)} ft\nCTE: ${(cte/PX_PER_FT).toFixed(1)} ft\nSPD MULT: ${speedScalar}x`;
+        `WIND: ${(wind.speed/KNOTS_TO_FTS).toFixed(1)} kts\nPRIORITY: ${tackState === 0 ? 'SPEED' : 'STEERING'}\nCTE: ${(cte/PX_PER_FT).toFixed(1)} ft`;
 }
 
 function draw() {
@@ -160,12 +158,10 @@ function draw() {
         ctx.stroke();
     });
 
-    // Boat with orientation markers
+    // Boat
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
-    ctx.strokeStyle = "#eee8d5"; ctx.lineWidth = 2;
-    ctx.strokeRect(-12, -6, 24, 12);
+    ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-12, -6, 24, 12);
     ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(12, 0, 3, 0, Math.PI*2); ctx.fill();
-    
     boat.sails.forEach(s => {
         ctx.save(); ctx.translate(s.x_off, 0); ctx.rotate(s.angle - boat.theta);
         ctx.fillStyle = "rgba(42, 161, 152, 0.8)"; ctx.fillRect(-10, -2, 20, 4);

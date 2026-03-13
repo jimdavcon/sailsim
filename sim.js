@@ -2,13 +2,23 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Stability Debugger</title>
+    <title>Sailboat: Visible Debugger</title>
     <style>
-        body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; flex-direction: row-reverse; }
-        #ui-sidebar { width: 12%; min-width: 180px; height: calc(100% - 150px); background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; flex-shrink: 0; }
-        #world-container { flex-grow: 1; height: calc(100% - 150px); background: #002b36; overflow: hidden; position: relative; }
-        #chart-container { position: absolute; bottom: 0; left: 0; width: 100%; height: 150px; background: #001e26; border-top: 2px solid #586e75; z-index: 10; }
-        canvas { display: block; width: 100%; height: 100%; }
+        body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; }
+        
+        /* UI Sidebar on the Right */
+        #ui-sidebar { width: 180px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-left: 1px solid #586e75; order: 2; }
+        
+        /* Main Viewport Area */
+        #main-view { flex-grow: 1; display: flex; flex-direction: column; height: 100%; order: 1; }
+        
+        #world-container { flex-grow: 1; background: #002b36; overflow: hidden; position: relative; }
+        #simCanvas { width: 100%; height: 100%; display: block; }
+
+        /* Stripchart at the bottom */
+        #chart-container { height: 150px; background: #001e26; border-top: 2px solid #586e75; position: relative; width: 100%; }
+        #chartCanvas { width: 100%; height: 100%; display: block; }
+
         .section { margin-bottom: 20px; border-bottom: 1px solid #586e75; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
@@ -18,7 +28,7 @@
         .center-line { position: absolute; left: 50%; top: -2px; height: 12px; width: 1px; background: #93a1a1; }
         #telemetry { color: #268bd2; font-size: 11px; white-space: pre-wrap; line-height: 1.4; }
         h3 { font-size: 13px; margin: 0 0 15px 0; color: #b58900; }
-        .chart-legend { position: absolute; top: 5px; right: 10px; font-size: 10px; color: #93a1a1; }
+        .chart-legend { position: absolute; top: 5px; right: 10px; font-size: 10px; color: #93a1a1; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -39,10 +49,14 @@
     <div id="telemetry">Status: Active</div>
 </div>
 
-<div id="world-container"><canvas id="simCanvas"></canvas></div>
-<div id="chart-container">
-    <div class="chart-legend"><span style="color:#b58900">■ CTE</span> | <span style="color:#2aa198">■ BEARING CMD</span></div>
-    <canvas id="chartCanvas"></canvas>
+<div id="main-view">
+    <div id="world-container">
+        <canvas id="simCanvas"></canvas>
+    </div>
+    <div id="chart-container">
+        <div class="chart-legend"><span style="color:#b58900">■ CTE</span> | <span style="color:#2aa198">■ BEARING CMD</span></div>
+        <canvas id="chartCanvas"></canvas>
+    </div>
 </div>
 
 <script>
@@ -50,7 +64,6 @@ const canvas = document.getElementById('simCanvas');
 const ctx = canvas.getContext('2d');
 const chartCanvas = document.getElementById('chartCanvas');
 const chartCtx = chartCanvas.getContext('2d');
-const container = document.getElementById('world-container');
 
 let WORLD_SIZE_FT = 2200;
 let PX_PER_FT;
@@ -72,8 +85,10 @@ function norm(a) {
 }
 
 function resize() {
-    canvas.width = container.clientWidth; canvas.height = container.clientHeight;
-    chartCanvas.width = window.innerWidth; chartCanvas.height = 150;
+    canvas.width = canvas.parentElement.clientWidth;
+    canvas.height = canvas.parentElement.clientHeight;
+    chartCanvas.width = chartCanvas.parentElement.clientWidth;
+    chartCanvas.height = 150;
     PX_PER_FT = Math.min(canvas.width, canvas.height) / WORLD_SIZE_FT;
     initSquareMission();
 }
@@ -116,7 +131,7 @@ function update(dt) {
     const targetBearing = Math.atan2(ty - boat.y, tx - boat.x);
     const hErr = norm(targetBearing - boat.theta);
     
-    // Log data for stripchart
+    // Data logging
     history.push({ cte: cte / PX_PER_FT, bearing: targetBearing });
     if (history.length > chartCanvas.width) history.shift();
 
@@ -180,11 +195,11 @@ function draw() {
     chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
     chartCtx.strokeStyle = "#586e75"; chartCtx.beginPath(); chartCtx.moveTo(0, 75); chartCtx.lineTo(chartCanvas.width, 75); chartCtx.stroke();
     
-    chartCtx.lineWidth = 2;
+    chartCtx.lineWidth = 1.5;
     // Plot CTE (Yellow)
     chartCtx.strokeStyle = "#b58900"; chartCtx.beginPath();
     history.forEach((pt, i) => {
-        let y = 75 - (pt.cte * 0.5); // Scale CTE to fit
+        let y = 75 - (pt.cte * 0.4); 
         if (i === 0) chartCtx.moveTo(i, y); else chartCtx.lineTo(i, y);
     });
     chartCtx.stroke();
@@ -192,7 +207,7 @@ function draw() {
     // Plot Bearing Command (Cyan)
     chartCtx.strokeStyle = "#2aa198"; chartCtx.beginPath();
     history.forEach((pt, i) => {
-        let y = 75 - (pt.bearing * (70/Math.PI)); // Scale +/- PI to chart height
+        let y = 75 - (pt.bearing * (70/Math.PI)); 
         if (i === 0) chartCtx.moveTo(i, y); else chartCtx.lineTo(i, y);
     });
     chartCtx.stroke();

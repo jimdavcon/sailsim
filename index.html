@@ -2,31 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Autonomous Sailboat: Layout Corrected</title>
+    <title>Autonomous Sailboat: Pure Physics</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; display: flex; width: 100vw; height: 100vh; }
-        
-        #ui-sidebar { 
-            width: 10%; /* Reverted to 10% */
-            min-width: 150px; /* Safety floor for readability */
-            height: 100%; 
-            background: #073642; 
-            padding: 15px; 
-            box-sizing: border-box; 
-            color: #859900; 
-            border-right: 1px solid #586e75;
-            flex-shrink: 0;
-        }
-
-        #world-container { 
-            flex-grow: 1; 
-            height: 100%; 
-            background: #002b36;
-            overflow: hidden;
-        }
-
+        #ui-sidebar { width: 10%; min-width: 150px; height: 100%; background: #073642; padding: 15px; box-sizing: border-box; color: #859900; border-right: 1px solid #586e75; flex-shrink: 0; }
+        #world-container { flex-grow: 1; height: 100%; background: #002b36; overflow: hidden; }
         canvas { display: block; width: 100%; height: 100%; }
-        
         .section { margin-bottom: 20px; border-bottom: 1px solid #586e75; padding-bottom: 10px; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin-bottom: 5px; }
         input { width: 100%; accent-color: #859900; cursor: pointer; }
@@ -37,7 +18,7 @@
 <body>
 
 <div id="ui-sidebar">
-    <h3>CIRCUIT CTRL</h3>
+    <h3>PHYSICS ENGINE</h3>
     <div class="section">
         <div class="label">Wind Direction</div>
         <input type="range" id="windDir" min="0" max="360" value="45">
@@ -49,8 +30,8 @@
         <span id="wsVal">0</span> kts
     </div>
     <div class="section">
-        <div class="label">Priority Blend</div>
-        <div id="telemetry">Calculating...</div>
+        <div class="label">Boat Status</div>
+        <div id="telemetry">No Wind...</div>
     </div>
 </div>
 
@@ -109,7 +90,6 @@ function update(dt) {
     const cte = (boat.x - pA.x) * (-uY) + (boat.y - pA.y) * uX;
     const distToDest = Math.hypot(pB.x - boat.x, pB.y - boat.y);
 
-    // Continuous Circuit Switch
     if (atd >= pathLen && distToDest <= pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
         tackState = 0;
@@ -127,15 +107,16 @@ function update(dt) {
     let hErr = Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta;
     while(hErr > Math.PI) hErr -= 2*Math.PI; while(hErr < -Math.PI) hErr += 2*Math.PI;
 
-    // Linear Adjustment
     const normErr = Math.min(1, Math.abs(hErr) / (Math.PI / 2)); 
     const steerGain = 2.0 + (4.0 * normErr); 
     const speedScalar = 1.0 - (0.85 * normErr); 
 
+    // AUTHENTIC PROPULSION: Removed +1.0 floor
+    const baseSpeed = wind.speed * 0.4; 
+
     boat.omega += (hErr * steerGain - boat.omega * 5.0) * dt;
     boat.theta += boat.omega * dt;
     
-    const baseSpeed = 1.0 + (wind.speed * 0.3); 
     boat.vx = Math.cos(boat.theta) * baseSpeed * speedScalar;
     boat.vy = Math.sin(boat.theta) * baseSpeed * speedScalar;
     boat.x += boat.vx; boat.y += boat.vy;
@@ -150,7 +131,7 @@ function update(dt) {
     });
 
     document.getElementById('telemetry').innerText = 
-        `ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nSTEER: ${(normErr*100).toFixed(0)}%\nSPEED: ${((1-normErr)*100).toFixed(0)}%\nWP: ${currentWPIndex + 1}`;
+        `SPD: ${(baseSpeed/KNOTS_TO_FTS).toFixed(1)} kts\nHDG ERR: ${(Math.abs(hErr)*180/Math.PI).toFixed(0)}°\nLEG: ${currentWPIndex + 1}`;
 }
 
 function draw() {
@@ -163,7 +144,6 @@ function draw() {
         ctx.strokeStyle = "rgba(147, 161, 161, 0.2)";
         ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(wp.x, wp.y); ctx.stroke();
         ctx.setLineDash([]);
-        
         const dx = wp.x - prev.x, dy = wp.y - prev.y, ang = Math.atan2(dy, dx);
         ctx.strokeStyle = (i === currentWPIndex) ? "#859900" : "rgba(88, 110, 117, 0.2)";
         ctx.beginPath();
@@ -172,12 +152,10 @@ function draw() {
         ctx.moveTo(prev.x + prev.r * Math.cos(ang - Math.PI/2), prev.y + prev.r * Math.sin(ang - Math.PI/2));
         ctx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
         ctx.stroke();
-        
         ctx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.4)";
         ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
     });
 
-    // Boat
     ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
     ctx.strokeStyle = "#eee8d5"; ctx.strokeRect(-12, -6, 24, 12);
     ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(12, 0, 3, 0, Math.PI*2); ctx.fill();

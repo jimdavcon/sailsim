@@ -2,21 +2,21 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: 5-Waypoint Mission</title>
+    <title>Sailboat: Sensor-Constrained Autonomy</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
-        #world-pane { position: absolute; top: 0; left: 0; right: 240px; bottom: 0; background: #002b36; }
+        #world-pane { position: absolute; top: 0; left: 0; right: 260px; bottom: 0; background: #002b36; }
         #ui-sidebar { 
-            position: absolute; top: 0; right: 0; width: 240px; bottom: 0; 
-            background: #073642; border-left: 1px solid #586e75; 
+            position: absolute; top: 0; right: 0; width: 260px; bottom: 0; 
+            background: #073642; border-left: 2px solid #586e75; 
             padding: 15px; box-sizing: border-box; color: #859900;
             display: flex; flex-direction: column;
         }
         canvas { width: 100%; height: 100%; display: block; }
-        #chart-box { width: 100%; height: 150px; background: #001e26; margin-top: auto; border: 1px solid #586e75; position: relative; }
-        .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin: 15px 0 5px 0; }
+        #chart-box { width: 100%; height: 160px; background: #001e26; margin-top: auto; border: 2px solid #586e75; position: relative; }
+        .label { font-size: 11px; color: #93a1a1; text-transform: uppercase; margin: 15px 0 5px 0; font-weight: bold; }
         input { width: 100%; accent-color: #859900; margin-bottom: 10px; }
-        #telemetry { font-size: 11px; color: #268bd2; line-height: 1.6; background: #00212b; padding: 10px; border-radius: 4px; }
+        #telemetry { font-size: 11px; color: #268bd2; line-height: 1.4; background: #00212b; padding: 10px; border: 1px solid #586e75; }
     </style>
 </head>
 <body>
@@ -24,20 +24,23 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0 0 15px 0; color:#b58900;">MISSION CMD</h3>
+    <h3 style="margin:0 0 10px 0; color:#b58900;">SENSOR INPUTS</h3>
     <div id="telemetry">
-        TARGET: <span id="wp-val">WP1</span><br>
-        CTE: <span id="cte-val">0</span> ft<br>
-        BRG: <span id="brg-val">0</span>°
+        POS: <span id="pos-val">0,0</span><br>
+        REL WIND: <span id="rel-wind-val">0</span>° @ <span id="ws-val">15</span>kt<br>
+        WING1 AOA: <span id="w1-val">0</span>°<br>
+        WING2 AOA: <span id="w2-val">0</span>°
     </div>
-    <div class="label">Wind Direction</div>
+    
+    <div class="label">True Wind Dir</div>
     <input type="range" id="windDir" min="0" max="360" value="45">
-    <div class="label">Wind Speed</div>
+    
+    <div class="label">True Wind Speed</div>
     <input type="range" id="windSpd" min="0" max="40" value="15">
-    <div class="label">Stripchart</div>
+
+    <div class="label">Performance Chart</div>
     <div id="chart-box">
         <canvas id="chartCanvas"></canvas>
-        <div style="position:absolute; bottom:2px; right:4px; font-size:9px; color:#586e75;">YEL:CTE | CYN:BRG</div>
     </div>
 </div>
 
@@ -49,12 +52,16 @@ const cCtx = chartCanvas.getContext('2d');
 
 let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
-let wind = { angle: 0.78, speed: 15 * KNOTS_TO_FTS };
+let trueWind = { angle: 0.78, speed: 15 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
 let history = [];
-let boat = { x: 0, y: 0, theta: 0, omega: 0 };
-let lastTargetB = 0;
+
+// Boat State
+const boat = { 
+    x: 0, y: 0, theta: 0, omega: 0, 
+    sails: [{x_off: 3.5, aoa: 0}, {x_off: -3.5, aoa: 0}] 
+};
 
 function norm(a) {
     while (a > Math.PI) a -= 2 * Math.PI;
@@ -68,59 +75,62 @@ function resize() {
     chartCanvas.width = chartCanvas.offsetWidth;
     chartCanvas.height = chartCanvas.offsetHeight;
     PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 2200;
-    
-    const d = 500 * PX_PER_FT;
-    const r = 100 * PX_PER_FT;
-    // 5 Waypoints: Square + Return to Origin
+    const d = 550 * PX_PER_FT, r = 120 * PX_PER_FT;
     waypoints = [
-        {x: d,  y: -d, r: r, id: "WP1"},
-        {x: d,  y: d,  r: r, id: "WP2"},
-        {x: -d, y: d,  r: r, id: "WP3"},
-        {x: -d, y: -d, r: r, id: "WP4"},
+        {x: d,  y: -d, r: r, id: "WP1"}, {x: d,  y: d,  r: r, id: "WP2"},
+        {x: -d, y: d,  r: r, id: "WP3"}, {x: -d, y: -d, r: r, id: "WP4"},
         {x: 0,  y: 0,  r: r, id: "ORIGIN"}
     ];
 }
 
-document.getElementById('windDir').oninput = e => wind.angle = e.target.value * Math.PI/180;
-document.getElementById('windSpd').oninput = e => wind.speed = e.target.value * KNOTS_TO_FTS;
+document.getElementById('windDir').oninput = e => trueWind.angle = e.target.value * Math.PI/180;
+document.getElementById('windSpd').oninput = e => trueWind.speed = e.target.value * KNOTS_TO_FTS;
 
 function update() {
-    let prevIdx = (currentWPIndex === 0) ? waypoints.length - 1 : currentWPIndex - 1;
-    let pA = waypoints[prevIdx];
     let pB = waypoints[currentWPIndex];
 
-    let dx = pB.x - pA.x, dy = pB.y - pA.y, pathLen = Math.hypot(dx, dy);
-    let ux = dx / pathLen, uy = dy / pathLen;
-    let bdx = boat.x - pA.x, bdy = boat.y - pA.y;
-
-    let atd = bdx * ux + bdy * uy;
-    let cte = bdx * (-uy) + bdy * ux;
-
-    if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
-        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-        boat.omega *= 0.1;
-    }
-
-    let tx = pA.x + (atd + 400 * PX_PER_FT) * ux;
-    let ty = pA.y + (atd + 400 * PX_PER_FT) * uy;
+    // --- SENSOR INPUTS (Only these can be used for logic) ---
+    // 1. Boat Position (Provided)
+    let boatPos = { x: boat.x, y: boat.y };
+    // 2. Relative Wind (Body-relative angle and magnitude)
+    let relWindAngle = norm((trueWind.angle + Math.PI) - boat.theta);
+    let relWindSpeed = trueWind.speed; // Simplified: assumes low boat speed vs wind
+    // 3. Wing AOA (Set by controller, read by physics)
     
-    let rawTargetB = Math.atan2(ty - boat.y, tx - boat.x);
-    let targetB = lastTargetB + norm(rawTargetB - lastTargetB);
-    lastTargetB = targetB;
+    // --- NAVIGATION LOGIC (Sensor-Limited) ---
+    // Calculate vector to waypoint in world space...
+    let dx = pB.x - boatPos.x;
+    let dy = pB.y - boatPos.y;
+    let dist = Math.hypot(dx, dy);
+    
+    // ...BUT transform it into a body-relative bearing immediately
+    let worldBearingToWP = Math.atan2(dy, dx);
+    let relativeBearingToWP = norm(worldBearingToWP - boat.theta);
 
-    let err = norm(targetB - boat.theta);
-    boat.omega += (err * 4.0 - boat.omega * 6.0) * 0.016;
+    if (dist < pB.r) currentWPIndex = (currentWPIndex + 1) % waypoints.length;
+
+    // Control rudder based ONLY on relative bearing
+    // No global theta used here.
+    boat.omega += (relativeBearingToWP * 4.0 - boat.omega * 6.0) * 0.016;
     boat.theta = norm(boat.theta + boat.omega * 0.016);
     
-    let speed = wind.speed * 0.4 * (1.0 - Math.min(0.8, Math.abs(err)));
-    boat.x += Math.cos(boat.theta) * speed;
-    boat.y += Math.sin(boat.theta) * speed;
+    // Control wings based ONLY on relative wind sensor
+    boat.sails.forEach(s => {
+        // Simple bang-bang or proportional AOA control based on relWindAngle
+        s.aoa = Math.max(-0.25, Math.min(0.25, Math.sign(Math.sin(relWindAngle)) * 0.22));
+    });
 
-    document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
-    document.getElementById('wp-val').innerText = pB.id;
-    document.getElementById('brg-val').innerText = (norm(targetB) * 180/Math.PI).toFixed(0);
+    // --- PHYSICS (External to Controller) ---
+    let thrust = relWindSpeed * 0.45 * Math.cos(s.aoa) * (1.0 - Math.abs(relativeBearingToWP)/Math.PI);
+    boat.x += Math.cos(boat.theta) * thrust;
+    boat.y += Math.sin(boat.theta) * thrust;
 
-    history.push({cte: cte/PX_PER_FT, brg: norm(targetB)});
+    // Telemetry Update
+    document.getElementById('pos-val').innerText = `${(boat.x/PX_PER_FT).toFixed(0)}, ${(boat.y/PX_PER_FT).toFixed(0)}`;
+    document.getElementById('rel-wind-val').innerText = (relWindAngle * 180/Math.PI).toFixed(0);
+    document.getElementById('w1-val').innerText = (boat.sails[0].aoa * 180/Math.PI).toFixed(0);
+    
+    history.push({cte: relativeBearingToWP, brg: relWindAngle});
     if(history.length > chartCanvas.width) history.shift();
 }
 
@@ -128,44 +138,42 @@ function draw() {
     sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
     sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
     
+    sCtx.lineWidth = 3;
     waypoints.forEach((wp, i) => {
-        let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
-        let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
-        
-        // Corridors
-        sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
-        sCtx.beginPath();
-        sCtx.moveTo(prev.x + wp.r * Math.cos(ang + Math.PI/2), prev.y + wp.r * Math.sin(ang + Math.PI/2));
-        sCtx.lineTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
-        sCtx.moveTo(prev.x + wp.r * Math.cos(ang - Math.PI/2), prev.y + wp.r * Math.sin(ang - Math.PI/2));
-        sCtx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
-        sCtx.stroke();
-
-        // WP Circles
-        sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.3)";
+        sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "#586e75";
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
+        
+        // WP Wind Indicators
+        sCtx.save(); sCtx.translate(wp.x, wp.y); sCtx.rotate(trueWind.angle);
+        sCtx.strokeStyle = "#268bd2"; sCtx.beginPath(); sCtx.moveTo(-20,0); sCtx.lineTo(20,0); sCtx.lineTo(12,-6); sCtx.stroke();
+        sCtx.restore();
     });
 
+    // Boat Body
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
-    sCtx.strokeStyle = "#eee8d5"; sCtx.strokeRect(-12,-6,24,12);
-    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(8,-2,4,4);
+    sCtx.strokeStyle = "#eee8d5"; sCtx.lineWidth = 3;
+    sCtx.strokeRect(-14,-7,28,14);
+    
+    // Sails (drawn using body-relative angles)
+    boat.sails.forEach(s => {
+        sCtx.save(); sCtx.translate(s.x_off, 0); 
+        // Sensor Input: relWindAngle + commanded s.aoa
+        let relWindAngle = norm((trueWind.angle + Math.PI) - boat.theta);
+        sCtx.rotate(relWindAngle + s.aoa);
+        sCtx.fillStyle = "rgba(42, 161, 152, 0.9)"; sCtx.fillRect(-12, -2, 24, 4);
+        sCtx.restore();
+    });
     sCtx.restore(); sCtx.restore();
 
     // Chart
     cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
-    cCtx.strokeStyle = "#586e75"; cCtx.beginPath(); cCtx.moveTo(0,75); cCtx.lineTo(chartCanvas.width, 75); cCtx.stroke();
-    cCtx.lineWidth = 2;
-    cCtx.strokeStyle = "#b58900"; cCtx.beginPath();
-    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.cte*0.4); else cCtx.lineTo(i, 75-h.cte*0.4); });
-    cCtx.stroke();
     cCtx.strokeStyle = "#2aa198"; cCtx.beginPath();
-    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.brg*20); else cCtx.lineTo(i, 75-h.brg*20); });
+    history.forEach((h, i) => { let y = 80 - h.cte*20; if(i===0) cCtx.moveTo(i, y); else cCtx.lineTo(i, y); });
     cCtx.stroke();
 }
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
-window.addEventListener('resize', resize);
-resize(); loop();
+window.addEventListener('resize', resize); resize(); loop();
 </script>
 </body>
 </html>

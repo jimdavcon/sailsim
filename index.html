@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: High-Gain Intercept</title>
+    <title>Sailboat: High Integral Gain</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -25,10 +25,11 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">AGGRESSIVE NAV</h3>
+    <h3 style="margin:0; color:#b58900;">PRECISION TRACKER</h3>
     <div id="telemetry">
         LEG: <span id="leg-val">Origin -> WP1</span><br>
         CTE: <span id="cte-val">0</span> ft<br>
+        iCTE: <span id="icte-val">0</span><br>
         MODE: <span id="mode-val">DIRECT</span>
     </div>
     
@@ -54,6 +55,8 @@ let trueWind = { angle: 0.78, speed: 0 };
 let waypoints = [];
 let currentWPIndex = 1;
 let history = [];
+let cteIntegral = 0; // Accumulator for integral gain
+
 const boat = { x: 0, y: 0, theta: 0, omega: 0, sails: [{x: 5, a:0}, {x: -5, a:0}] };
 
 function norm(a) {
@@ -97,12 +100,10 @@ function update() {
     let targetX, targetY;
     let modeText = "";
     
-    // --- HIGH GAIN INTERCEPT LOGIC ---
+    // --- INTEGRAL GAIN LOGIC ---
     if (Math.abs(cte) > pB.r) {
         modeText = "INTERCEPT";
-        // Higher gain on CTE effect:
-        // We target a point very close to our current 'along track' position
-        // This forces the boat to turn nearly 90 degrees to the corridor.
+        cteIntegral = 0; // Reset integral when performing emergency re-entry
         let interceptGain = 0.1; 
         let remainingPath = pathLen - atd;
         let interceptDist = atd + (remainingPath * interceptGain);
@@ -110,8 +111,16 @@ function update() {
         targetY = pA.y + interceptDist * uy;
     } else {
         modeText = "DIRECT";
-        targetX = pB.x;
-        targetY = pB.y;
+        // Accumulate Integral when inside corridor
+        // Higher gain applied to the accumulation
+        cteIntegral += (cte / PX_PER_FT) * 0.05; 
+        // Cap the integral to prevent wind-up
+        cteIntegral = Math.max(-150, Math.min(150, cteIntegral));
+
+        // Adjust target based on accumulated error
+        // Effectively "tucking" the boat into the wind/current
+        targetX = pB.x + (-uy * cteIntegral * PX_PER_FT * 0.5);
+        targetY = pB.y + (ux * cteIntegral * PX_PER_FT * 0.5);
     }
 
     let relBearing = norm(Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta);
@@ -119,9 +128,9 @@ function update() {
 
     if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
+        cteIntegral = 0; // Reset on waypoint hit
     }
 
-    // Steering Response
     boat.omega += (relBearing * 12.0 - boat.omega * 8.0) * 0.016;
     boat.theta = norm(boat.theta + boat.omega * 0.016);
     
@@ -134,6 +143,7 @@ function update() {
 
     document.getElementById('leg-val').innerText = `${pA.id} -> ${pB.id}`;
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
+    document.getElementById('icte-val').innerText = cteIntegral.toFixed(1);
     document.getElementById('mode-val').innerText = modeText;
     document.getElementById('mode-val').className = (modeText === "DIRECT") ? "status-on" : "status-off";
     

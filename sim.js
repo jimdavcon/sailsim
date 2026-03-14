@@ -2,29 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Sidebar Chart Fix</title>
+    <title>Sailboat: 5-Waypoint Mission</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
-        
-        /* Main World Map (Takes all space not used by sidebar) */
         #world-pane { position: absolute; top: 0; left: 0; right: 240px; bottom: 0; background: #002b36; }
-        
-        /* Sidebar (Increased width to accommodate chart) */
         #ui-sidebar { 
             position: absolute; top: 0; right: 0; width: 240px; bottom: 0; 
             background: #073642; border-left: 1px solid #586e75; 
             padding: 15px; box-sizing: border-box; color: #859900;
             display: flex; flex-direction: column;
         }
-        
         canvas { width: 100%; height: 100%; display: block; }
-        
-        /* Stripchart container inside sidebar */
-        #chart-box { 
-            width: 100%; height: 150px; background: #001e26; 
-            margin-top: auto; border: 1px solid #586e75; position: relative;
-        }
-
+        #chart-box { width: 100%; height: 150px; background: #001e26; margin-top: auto; border: 1px solid #586e75; position: relative; }
         .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin: 15px 0 5px 0; }
         input { width: 100%; accent-color: #859900; margin-bottom: 10px; }
         #telemetry { font-size: 11px; color: #268bd2; line-height: 1.6; background: #00212b; padding: 10px; border-radius: 4px; }
@@ -32,32 +21,23 @@
 </head>
 <body>
 
-<div id="world-pane">
-    <canvas id="simCanvas"></canvas>
-</div>
+<div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0 0 15px 0; color:#b58900;">INSTRUMENTS</h3>
-    
+    <h3 style="margin:0 0 15px 0; color:#b58900;">MISSION CMD</h3>
     <div id="telemetry">
-        MODE: <span id="mode-val">LINE</span><br>
-        WP: <span id="wp-val">1</span><br>
+        TARGET: <span id="wp-val">WP1</span><br>
         CTE: <span id="cte-val">0</span> ft<br>
         BRG: <span id="brg-val">0</span>°
     </div>
-
     <div class="label">Wind Direction</div>
     <input type="range" id="windDir" min="0" max="360" value="45">
-    
     <div class="label">Wind Speed</div>
-    <input type="range" id="windSpd" min="0" max="40" value="12">
-
+    <input type="range" id="windSpd" min="0" max="40" value="15">
     <div class="label">Stripchart</div>
     <div id="chart-box">
         <canvas id="chartCanvas"></canvas>
-        <div style="position:absolute; bottom:2px; right:4px; font-size:9px; color:#586e75;">
-            YEL:CTE | CYN:BRG
-        </div>
+        <div style="position:absolute; bottom:2px; right:4px; font-size:9px; color:#586e75;">YEL:CTE | CYN:BRG</div>
     </div>
 </div>
 
@@ -69,7 +49,7 @@ const cCtx = chartCanvas.getContext('2d');
 
 let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
-let wind = { angle: 0.78, speed: 12 * KNOTS_TO_FTS };
+let wind = { angle: 0.78, speed: 15 * KNOTS_TO_FTS };
 let waypoints = [];
 let currentWPIndex = 0;
 let history = [];
@@ -87,12 +67,17 @@ function resize() {
     simCanvas.height = simCanvas.offsetHeight;
     chartCanvas.width = chartCanvas.offsetWidth;
     chartCanvas.height = chartCanvas.offsetHeight;
-    PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 1800;
+    PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 2200;
     
-    const d = 400 * PX_PER_FT; const r = 80 * PX_PER_FT;
+    const d = 500 * PX_PER_FT;
+    const r = 100 * PX_PER_FT;
+    // 5 Waypoints: Square + Return to Origin
     waypoints = [
-        {x:d, y:-d, r:r, id:"1"}, {x:d, y:d, r:r, id:"2"},
-        {x:-d, y:d, r:r, id:"3"}, {x:-d, y:-d, r:r, id:"4"}
+        {x: d,  y: -d, r: r, id: "WP1"},
+        {x: d,  y: d,  r: r, id: "WP2"},
+        {x: -d, y: d,  r: r, id: "WP3"},
+        {x: -d, y: -d, r: r, id: "WP4"},
+        {x: 0,  y: 0,  r: r, id: "ORIGIN"}
     ];
 }
 
@@ -100,25 +85,26 @@ document.getElementById('windDir').oninput = e => wind.angle = e.target.value * 
 document.getElementById('windSpd').oninput = e => wind.speed = e.target.value * KNOTS_TO_FTS;
 
 function update() {
-    let pA = currentWPIndex === 0 ? waypoints[waypoints.length-1] : waypoints[currentWPIndex-1];
+    let prevIdx = (currentWPIndex === 0) ? waypoints.length - 1 : currentWPIndex - 1;
+    let pA = waypoints[prevIdx];
     let pB = waypoints[currentWPIndex];
 
-    let dx = pB.x - pA.x, dy = pB.y - pA.y, len = Math.hypot(dx, dy);
-    let ux = dx/len, uy = dy/len;
-    let atd = (boat.x - pA.x)*ux + (boat.y - pA.y)*uy;
-    let cte = (boat.x - pA.x)*(-uy) + (boat.y - pA.y)*ux;
+    let dx = pB.x - pA.x, dy = pB.y - pA.y, pathLen = Math.hypot(dx, dy);
+    let ux = dx / pathLen, uy = dy / pathLen;
+    let bdx = boat.x - pA.x, bdy = boat.y - pA.y;
+
+    let atd = bdx * ux + bdy * uy;
+    let cte = bdx * (-uy) + bdy * ux;
 
     if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
         boat.omega *= 0.1;
     }
 
-    // Steering Stability: Look-ahead point
-    let tx = pA.x + (atd + 400*PX_PER_FT)*ux;
-    let ty = pA.y + (atd + 400*PX_PER_FT)*uy;
+    let tx = pA.x + (atd + 400 * PX_PER_FT) * ux;
+    let ty = pA.y + (atd + 400 * PX_PER_FT) * uy;
     
     let rawTargetB = Math.atan2(ty - boat.y, tx - boat.x);
-    // Smooth the target bearing to prevent sign-flip 360s
     let targetB = lastTargetB + norm(rawTargetB - lastTargetB);
     lastTargetB = targetB;
 
@@ -139,15 +125,25 @@ function update() {
 }
 
 function draw() {
-    // 1. World Map
     sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
     sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
     
     waypoints.forEach((wp, i) => {
-        sCtx.strokeStyle = (i===currentWPIndex) ? "#859900" : "#073642";
-        sCtx.setLineDash([5, 5]);
+        let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
+        let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
+        
+        // Corridors
+        sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(133, 153, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
+        sCtx.beginPath();
+        sCtx.moveTo(prev.x + wp.r * Math.cos(ang + Math.PI/2), prev.y + wp.r * Math.sin(ang + Math.PI/2));
+        sCtx.lineTo(wp.x + wp.r * Math.cos(ang + Math.PI/2), wp.y + wp.r * Math.sin(ang + Math.PI/2));
+        sCtx.moveTo(prev.x + wp.r * Math.cos(ang - Math.PI/2), prev.y + wp.r * Math.sin(ang - Math.PI/2));
+        sCtx.lineTo(wp.x + wp.r * Math.cos(ang - Math.PI/2), wp.y + wp.r * Math.sin(ang - Math.PI/2));
+        sCtx.stroke();
+
+        // WP Circles
+        sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "rgba(88, 110, 117, 0.3)";
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
-        sCtx.setLineDash([]);
     });
 
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
@@ -155,16 +151,13 @@ function draw() {
     sCtx.fillStyle = "#dc322f"; sCtx.fillRect(8,-2,4,4);
     sCtx.restore(); sCtx.restore();
 
-    // 2. Stripchart in Sidebar
+    // Chart
     cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
     cCtx.strokeStyle = "#586e75"; cCtx.beginPath(); cCtx.moveTo(0,75); cCtx.lineTo(chartCanvas.width, 75); cCtx.stroke();
-    
-    // Plot CTE
+    cCtx.lineWidth = 2;
     cCtx.strokeStyle = "#b58900"; cCtx.beginPath();
     history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.cte*0.4); else cCtx.lineTo(i, 75-h.cte*0.4); });
     cCtx.stroke();
-
-    // Plot Bearing
     cCtx.strokeStyle = "#2aa198"; cCtx.beginPath();
     history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.brg*20); else cCtx.lineTo(i, 75-h.brg*20); });
     cCtx.stroke();

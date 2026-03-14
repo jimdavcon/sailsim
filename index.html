@@ -2,21 +2,21 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Unit Vector Steering</title>
+    <title>Sailboat: Pinch-Zoom Navigation</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
-        #world-pane { position: absolute; top: 0; left: 0; right: 240px; bottom: 0; background: #002b36; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; touch-action: none; }
+        #world-pane { position: absolute; top: 0; left: 0; right: 240px; bottom: 0; background: #002b36; overflow: hidden; cursor: crosshair; }
         #ui-sidebar { 
             position: absolute; top: 0; right: 0; width: 240px; bottom: 0; 
             background: #073642; border-left: 1px solid #586e75; 
             padding: 15px; box-sizing: border-box; color: #859900;
-            display: flex; flex-direction: column;
+            display: flex; flex-direction: column; z-index: 10;
         }
         canvas { width: 100%; height: 100%; display: block; }
-        #chart-box { width: 100%; height: 150px; background: #001e26; margin-top: auto; border: 1px solid #586e75; position: relative; }
-        .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin: 15px 0 5px 0; }
-        input { width: 100%; accent-color: #859900; margin-bottom: 10px; }
-        #telemetry { font-size: 11px; color: #268bd2; line-height: 1.6; background: #00212b; padding: 10px; border-radius: 4px; }
+        #chart-box { width: 100%; height: 140px; background: #001e26; margin-top: auto; border: 1px solid #586e75; position: relative; }
+        .label { font-size: 10px; color: #93a1a1; text-transform: uppercase; margin: 10px 0 5px 0; }
+        input { width: 100%; accent-color: #859900; margin-bottom: 5px; }
+        #telemetry { font-size: 11px; color: #268bd2; line-height: 1.4; background: #00212b; padding: 8px; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -24,11 +24,11 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0 0 15px 0; color:#b58900;">VECTOR NAV</h3>
+    <h3 style="margin:0 0 10px 0; color:#b58900;">NAV COMMS</h3>
     <div id="telemetry">
         WP: <span id="wp-val">1</span><br>
         CTE: <span id="cte-val">0</span> ft<br>
-        H_ERR: <span id="err-val">0</span>°
+        ZOOM: <span id="zoom-val">1.0</span>x
     </div>
 
     <div class="label">Wind Direction</div>
@@ -39,7 +39,7 @@
     <div class="label">Stripchart</div>
     <div id="chart-box">
         <canvas id="chartCanvas"></canvas>
-        <div style="position:absolute; bottom:2px; right:4px; font-size:9px; color:#586e75;">YEL:CTE | CYN:ERR</div>
+        <div style="position:absolute; bottom:2px; right:4px; font-size:8px; color:#586e75;">YEL:CTE | CYN:ERR</div>
     </div>
 </div>
 
@@ -57,6 +57,12 @@ let currentWPIndex = 0;
 let history = [];
 let boat = { x: 0, y: 0, theta: 0, omega: 0 };
 
+// --- ZOOM & PAN STATE ---
+let camera = { zoom: 1.0, x: 0, y: 0 };
+let lastTouchDist = 0;
+let isPanning = false;
+let lastMouse = { x: 0, y: 0 };
+
 function resize() {
     simCanvas.width = simCanvas.offsetWidth;
     simCanvas.height = simCanvas.offsetHeight;
@@ -68,6 +74,38 @@ function resize() {
     waypoints = [{x:d,y:-d,r:r,id:"1"},{x:d,y:d,r:r,id:"2"},{x:-d,y:d,r:r,id:"3"},{x:-d,y:-d,r:r,id:"4"}];
 }
 
+// --- INPUT HANDLING ---
+simCanvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    camera.zoom = Math.min(Math.max(0.2, camera.zoom * delta), 10);
+}, { passive: false });
+
+simCanvas.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+        lastTouchDist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+    } else if (e.touches.length === 1) {
+        isPanning = true;
+        lastMouse = { x: e.touches[0].pageX, y: e.touches[0].pageY };
+    }
+});
+
+simCanvas.addEventListener('touchmove', e => {
+    if (e.touches.length === 2) {
+        const dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+        const delta = dist / lastTouchDist;
+        camera.zoom = Math.min(Math.max(0.2, camera.zoom * delta), 10);
+        lastTouchDist = dist;
+    } else if (e.touches.length === 1 && isPanning) {
+        camera.x += (e.touches[0].pageX - lastMouse.x) / camera.zoom;
+        camera.y += (e.touches[0].pageY - lastMouse.y) / camera.zoom;
+        lastMouse = { x: e.touches[0].pageX, y: e.touches[0].pageY };
+    }
+});
+
+simCanvas.addEventListener('touchend', () => { isPanning = false; lastTouchDist = 0; });
+
+// --- UPDATE & DRAW ---
 document.getElementById('windDir').oninput = e => wind.angle = e.target.value * Math.PI/180;
 document.getElementById('windSpd').oninput = e => wind.speed = e.target.value * KNOTS_TO_FTS;
 
@@ -75,55 +113,40 @@ function update() {
     let pA = currentWPIndex === 0 ? waypoints[waypoints.length-1] : waypoints[currentWPIndex-1];
     let pB = waypoints[currentWPIndex];
 
-    // 1. Path Geometry
     let dx = pB.x - pA.x, dy = pB.y - pA.y, pathLen = Math.hypot(dx, dy);
-    let ux = dx/pathLen, uy = dy/pathLen; // Path unit vector
-    let nx = -uy, ny = ux;               // Path normal unit vector
-
+    let ux = dx/pathLen, uy = dy/pathLen, nx = -uy, ny = ux;
     let bx = boat.x - pA.x, by = boat.y - pA.y;
-    let atd = bx * ux + by * uy;         // Along-track distance
-    let cte = bx * nx + by * ny;         // Cross-track error
+    let atd = bx * ux + by * uy, cte = bx * nx + by * ny;
 
-    if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
-        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-    }
+    if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) currentWPIndex = (currentWPIndex + 1) % waypoints.length;
 
-    // 2. Vector-Based Heading Error
-    // Desired velocity vector (d): sum of path direction and correction toward line
     let lookAhead = 400 * PX_PER_FT;
-    let corrGain = 0.8; 
-    let dx_target = ux * lookAhead - nx * cte * corrGain;
-    let dy_target = uy * lookAhead - ny * cte * corrGain;
+    let dx_target = ux * lookAhead - nx * cte * 0.8;
+    let dy_target = uy * lookAhead - ny * cte * 0.8;
     
-    // Boat current heading vector (b)
-    let boat_ux = Math.cos(boat.theta);
-    let boat_uy = Math.sin(boat.theta);
-
-    // Use atan2(cross_product, dot_product) for the shortest-path error
-    // dot = |a||b|cos(theta), cross = |a||b|sin(theta)
-    let dot = boat_ux * dx_target + boat_uy * dy_target;
-    let det = boat_ux * dy_target - boat_uy * dx_target;
+    let dot = Math.cos(boat.theta) * dx_target + Math.sin(boat.theta) * dy_target;
+    let det = Math.cos(boat.theta) * dy_target - Math.sin(boat.theta) * dx_target;
     let hErr = Math.atan2(det, dot);
 
-    // 3. Physics
     boat.omega += (hErr * 5.0 - boat.omega * 8.0) * 0.016;
     boat.theta += boat.omega * 0.016;
-    
     let speed = wind.speed * 0.4 * (1.0 - Math.min(0.7, Math.abs(hErr)));
     boat.x += Math.cos(boat.theta) * speed;
     boat.y += Math.sin(boat.theta) * speed;
 
-    // Telemetry & History
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
-    document.getElementById('err-val').innerText = (hErr * 180/Math.PI).toFixed(0);
     document.getElementById('wp-val').innerText = pB.id;
+    document.getElementById('zoom-val').innerText = camera.zoom.toFixed(1);
     history.push({cte: cte/PX_PER_FT, err: hErr});
     if(history.length > chartCanvas.width) history.shift();
 }
 
 function draw() {
     sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
-    sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
+    sCtx.save();
+    // Center of screen + Camera Pan + Camera Zoom
+    sCtx.translate(simCanvas.width/2 + camera.x * camera.zoom, simCanvas.height/2 + camera.y * camera.zoom);
+    sCtx.scale(camera.zoom, camera.zoom);
     
     waypoints.forEach((wp, i) => {
         sCtx.strokeStyle = (i===currentWPIndex) ? "#859900" : "#073642";
@@ -131,22 +154,21 @@ function draw() {
     });
 
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
-    sCtx.strokeStyle = "#eee8d5"; sCtx.strokeRect(-12,-6,24,12);
+    sCtx.strokeStyle = "#eee8d5"; sCtx.lineWidth = 1/camera.zoom;
+    sCtx.strokeRect(-12,-6,24,12);
     sCtx.fillStyle = "#dc322f"; sCtx.fillRect(8,-2,4,4);
-    sCtx.restore(); sCtx.restore();
+    sCtx.restore();
+    sCtx.restore();
 
+    // Chart
     cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
-    cCtx.strokeStyle = "#586e75"; cCtx.beginPath(); cCtx.moveTo(0,75); cCtx.lineTo(chartCanvas.width, 75); cCtx.stroke();
-    
+    cCtx.strokeStyle = "#586e75"; cCtx.beginPath(); cCtx.moveTo(0,70); cCtx.lineTo(chartCanvas.width, 70); cCtx.stroke();
     cCtx.lineWidth = 2;
-    // CTE (Yellow)
     cCtx.strokeStyle = "#b58900"; cCtx.beginPath();
-    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.cte*0.4); else cCtx.lineTo(i, 75-h.cte*0.4); });
+    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 70-h.cte*0.4); else cCtx.lineTo(i, 70-h.cte*0.4); });
     cCtx.stroke();
-
-    // HEADING ERR (Cyan)
     cCtx.strokeStyle = "#2aa198"; cCtx.beginPath();
-    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 75-h.err*25); else cCtx.lineTo(i, 75-h.err*25); });
+    history.forEach((h, i) => { if(i===0) cCtx.moveTo(i, 70-h.err*25); else cCtx.lineTo(i, 70-h.err*25); });
     cCtx.stroke();
 }
 

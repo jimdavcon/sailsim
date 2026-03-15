@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailing Sim: Hurricane Proof</title>
+    <title>Sailing Sim: Wing Alignment Fix</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -19,15 +19,15 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="color:#b58900; margin-top:0;">NACA 0012 STABLE</h3>
+    <h3 style="color:#b58900; margin-top:0;">WING ALIGNMENT</h3>
     <div class="telemetry">
-        SPD: <span id="spd-val">0</span> kts | H-AOA: <span id="h-aoa">0</span>°<br>
+        SPD: <span id="spd-val">0</span> kts<br>
         W-CL: <span id="cl-val">0</span> | H-CL: <span id="hcl-val">0</span><br>
-        <span id="nan-warning" style="color:#dc322f; display:none;">SYSTEM RESET: NaN DETECTED</span>
+        REL WIND: <span id="rel-w">0</span>°
     </div>
     
     <label>WIND SPEED (KTS) <span class="val" id="wsv">0</span></label>
-    <input type="range" id="wSpd" min="0" max="100" value="0">
+    <input type="range" id="wSpd" min="0" max="80" value="15">
 
     <label>WIND DIRECTION <span class="val" id="wdv">45°</span></label>
     <input type="range" id="wDir" min="0" max="360" value="45">
@@ -46,8 +46,8 @@ window.onload = function() {
     const POLAR = { 0:[0,0.01], 5:[0.5,0.02], 10:[1.0,0.04], 12.6:[1.2,0.06], 15:[1.4,0.1], 20:[0.8,0.3], 30:[0.5,0.6], 90:[0,1.2] };
 
     let Kp = 72, Ki = 0.8, Kd = 15;
-    let trueWind = { angle: 45 * Math.PI/180, speed: 0 };
-    let boat = { x:0, y:0, theta:0, omega:0, vx:0, vy:0, sails:[{x:12, a:0}, {x:-12, a:0}] };
+    let trueWind = { angle: 45 * Math.PI/180, speed: 15 * KNOTS_TO_FTS };
+    let boat = { x:0, y:0, theta:0, omega:0, vx:0, vy:0, sails:[{x:14, a:0}, {x:-14, a:0}] };
     let waypoints = [], currentWP = 1, cteInt = 0, lastT = {x:0, y:0}, PX_PER_FT = 1;
 
     function getCoeffs(aoaRad) {
@@ -98,22 +98,33 @@ window.onload = function() {
 
         let rb = Math.atan2(lastT.y-boat.y, lastT.x-boat.x) - boat.theta;
         while(rb > Math.PI) rb -= 2*Math.PI; while(rb < -Math.PI) rb += 2*Math.PI;
-        
-        boat.omega = Math.max(-5, Math.min(5, boat.omega + (rb * Kp - boat.omega * Kd) * dt));
+        boat.omega = Math.max(-4, Math.min(4, boat.omega + (rb * Kp - boat.omega * Kd) * dt));
         boat.theta += boat.omega * dt;
 
-        // --- Physics Stability ---
+        // --- Physics & Wing Alignment ---
         let tFx = 0, tFy = 0;
+        let windGlobal = trueWind.angle + Math.PI; // Direction wind is BLOWING
+        
         boat.sails.forEach(s => {
-            let relW = (trueWind.angle + Math.PI) - boat.theta;
-            while(relW > Math.PI) relW -= 2*Math.PI; while(relW < -Math.PI) relW += 2*Math.PI;
-            let side = Math.sign(Math.sin(relW)), aoa = 0.22;
-            s.a = relW + (side * aoa);
-            let c = getCoeffs(aoa);
-            let forceScale = Math.min(5000, 0.5 * AIR_DENSITY * Math.pow(trueWind.speed, 2) * 5.0); 
-            tFx += (c.cl * Math.sin(aoa) - c.cd * Math.cos(aoa)) * forceScale;
-            tFy += (c.cl * Math.cos(aoa) + c.cd * Math.sin(aoa)) * side * forceScale;
+            let relWindGlobal = windGlobal - boat.theta;
+            while(relWindGlobal > Math.PI) relWindGlobal -= 2*Math.PI;
+            while(relWindGlobal < -Math.PI) relWindGlobal += 2*Math.PI;
+            
+            let side = Math.sign(Math.sin(relWindGlobal));
+            let targetAoA = 0.22; // 12.6 degrees
+            
+            // The wing pivot angle (s.a) is the angle relative to the boat's centerline
+            s.a = relWindGlobal + (side * targetAoA);
+            
+            let c = getCoeffs(targetAoA);
+            let q = Math.min(6000, 0.5 * AIR_DENSITY * Math.pow(trueWind.speed, 2) * 6.0);
+            
+            // Thrust is projected into boat coordinates
+            tFx += (c.cl * Math.sin(targetAoA) - c.cd * Math.cos(targetAoA)) * q;
+            tFy += (c.cl * Math.cos(targetAoA) + c.cd * Math.sin(targetAoA)) * side * q;
+            
             document.getElementById('cl-val').innerText = c.cl.toFixed(1);
+            document.getElementById('rel-w').innerText = (relWindGlobal * 180 / Math.PI).toFixed(0);
         });
 
         let vF = boat.vx*Math.cos(boat.theta) + boat.vy*Math.sin(boat.theta);
@@ -121,28 +132,18 @@ window.onload = function() {
         let hAOA = -Math.atan2(vL, vF || 0.0001);
         let hc = getCoeffs(hAOA), hq = 0.5 * WATER_DENSITY * (vF*vF + vL*vL) * 0.18;
         
-        // Acceleration clamping to prevent NaNs
-        let accF = (tFx - (hc.cd*Math.cos(hAOA)-hc.cl*Math.sin(hAOA))*hq - Math.abs(vF)*0.3);
+        let accF = (tFx - (hc.cd*Math.cos(hAOA)-hc.cl*Math.sin(hAOA))*hq - Math.abs(vF)*0.2);
         let accL = (tFy + (hc.cl*Math.cos(hAOA)+hc.cd*Math.sin(hAOA))*hq);
         
         vF += Math.max(-100, Math.min(100, accF)) * dt;
         vL += Math.max(-100, Math.min(100, accL)) * dt;
-        vF *= 0.99; vL *= 0.92;
+        vF *= 0.992; vL *= 0.93;
 
         boat.vx = vF*Math.cos(boat.theta) - vL*Math.sin(boat.theta);
         boat.vy = vF*Math.sin(boat.theta) + vL*Math.cos(boat.theta);
         boat.x += boat.vx; boat.y += boat.vy;
 
-        // Anti-NaN Safeguard
-        if (isNaN(boat.x) || isNaN(boat.vx)) {
-            boat = { x:0, y:0, theta:0, omega:0, vx:0, vy:0, sails:[{x:12, a:0}, {x:-12, a:0}] };
-            document.getElementById('nan-warning').style.display = 'block';
-        } else {
-            document.getElementById('nan-warning').style.display = 'none';
-        }
-
         document.getElementById('spd-val').innerText = (vF/KNOTS_TO_FTS).toFixed(1);
-        document.getElementById('h-aoa').innerText = (hAOA*180/Math.PI).toFixed(1);
         document.getElementById('hcl-val').innerText = hc.cl.toFixed(1);
     }
 
@@ -150,7 +151,7 @@ window.onload = function() {
         ctx.fillStyle = "#eee8d5"; ctx.fillRect(0,0,canvas.width, canvas.height);
         ctx.save(); ctx.translate(canvas.width/2, canvas.height/2);
         
-        // World Grid
+        // Grid
         ctx.strokeStyle = "rgba(0,0,0,0.03)"; ctx.lineWidth = 1;
         for(let i=-2000; i<2000; i+=100*PX_PER_FT){
             ctx.beginPath(); ctx.moveTo(i,-2000); ctx.lineTo(i,2000); ctx.stroke();
@@ -174,17 +175,23 @@ window.onload = function() {
             ctx.restore();
         });
 
-        ctx.fillStyle="#268bd2"; ctx.beginPath(); ctx.arc(lastT.x, lastT.y, 8, 0, 7); ctx.fill();
+        // Boat Render
         ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
-        ctx.strokeStyle="#073642"; ctx.lineWidth=3; ctx.strokeRect(-15,-10,30,20);
-        ctx.fillStyle="#dc322f"; ctx.fillRect(10,-4,8,8);
+        ctx.strokeStyle="#073642"; ctx.lineWidth=3; ctx.strokeRect(-18,-12,36,24);
+        ctx.fillStyle="#dc322f"; ctx.fillRect(12,-4,8,8); // Bow
+        
         boat.sails.forEach(s => {
             ctx.save(); ctx.translate(s.x, 0); ctx.rotate(s.a);
+            // Wing Body
             ctx.fillStyle="#2aa198"; ctx.fillRect(-14,-2.5,28,5);
-            ctx.fillStyle="#dc322f"; ctx.beginPath(); ctx.arc(14,0,3.5,0,7); ctx.fill();
+            // LEADING EDGE (Red Dot) - Must point toward wind
+            ctx.fillStyle="#dc322f"; ctx.beginPath(); ctx.arc(14,0,4,0,7); ctx.fill();
             ctx.restore();
         });
-        ctx.restore(); ctx.restore();
+        ctx.restore();
+        
+        ctx.fillStyle="#268bd2"; ctx.beginPath(); ctx.arc(lastT.x, lastT.y, 8, 0, 7); ctx.fill();
+        ctx.restore();
     }
 
     function frame() { update(); draw(); requestAnimationFrame(frame); }

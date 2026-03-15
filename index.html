@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Waypoint Wind Field</title>
+    <title>Sailboat: Single-Arrow Waypoints</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -25,7 +25,7 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">FIELD NAVIGATOR</h3>
+    <h3 style="margin:0; color:#b58900;">PRECISION NAV</h3>
     <div id="telemetry">
         CTE: <span id="cte-val">0</span> ft<br>
         I-OFFSET: <span id="corr-val">0</span> ft<br>
@@ -34,13 +34,13 @@
     </div>
     
     <div class="label">Control Gains</div>
-    <label>PROP AUTHORITY (P) <span class="val-disp" id="p-val">72</span></label>
+    <label>P-AUTHORITY <span class="val-disp" id="p-val">72</span></label>
     <input type="range" id="gainP" min="0" max="150" value="72">
 
-    <label>INTEGRAL (I) <span class="val-disp" id="i-val">0.8</span></label>
+    <label>I-INTEGRAL <span class="val-disp" id="i-val">0.8</span></label>
     <input type="range" id="gainI" min="0" max="5" step="0.1" value="0.8">
 
-    <label>DAMPING (D) <span class="val-disp" id="d-val">12</span></label>
+    <label>D-DAMPING <span class="val-disp" id="d-val">12</span></label>
     <input type="range" id="gainD" min="0" max="50" value="12">
 
     <div class="label">Atmospheric</div>
@@ -151,25 +151,36 @@ function draw() {
     
     waypoints.forEach((wp, i) => {
         let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
-        
-        // --- WAYPOINT WIND ARROWS ---
+        let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
+
+        // --- SINGLE WAYPOINT WIND ARROW ---
         sCtx.save();
         sCtx.translate(wp.x, wp.y);
         sCtx.rotate(trueWind.angle);
-        sCtx.strokeStyle = "rgba(133, 153, 0, 0.6)"; sCtx.lineWidth = 2;
-        for(let j=-1; j<=1; j++) {
-            sCtx.beginPath(); sCtx.moveTo(j*10, -15); sCtx.lineTo(j*10, 15);
-            sCtx.lineTo(j*10 - 4, 8); sCtx.moveTo(j*10, 15); sCtx.lineTo(j*10 + 4, 8);
-            sCtx.stroke();
-        }
+        sCtx.strokeStyle = "#859900"; sCtx.lineWidth = 3;
+        sCtx.beginPath(); sCtx.moveTo(0, -20); sCtx.lineTo(0, 20); // Shaft
+        sCtx.lineTo(-6, 10); sCtx.moveTo(0, 20); sCtx.lineTo(6, 10); // Head
+        sCtx.stroke();
         sCtx.restore();
 
-        // Corridor and Centerline
+        // --- CORRIDOR LINES (6px) ---
+        sCtx.lineWidth = 6;
+        sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(181, 137, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
+        sCtx.beginPath();
+        sCtx.moveTo(prev.x + wp.r*Math.cos(ang+1.57), prev.y + wp.r*Math.sin(ang+1.57));
+        sCtx.lineTo(wp.x + wp.r*Math.cos(ang+1.57), wp.y + wp.r*Math.sin(ang+1.57));
+        sCtx.moveTo(prev.x + wp.r*Math.cos(ang-1.57), prev.y + wp.r*Math.sin(ang-1.57));
+        sCtx.lineTo(wp.x + wp.r*Math.cos(ang-1.57), wp.y + wp.r*Math.sin(ang-1.57));
+        sCtx.stroke();
+
+        // Centerline
         sCtx.setLineDash([10, 10]); sCtx.lineWidth = 1; sCtx.strokeStyle = "rgba(88, 110, 117, 0.3)";
         sCtx.beginPath(); sCtx.moveTo(prev.x, prev.y); sCtx.lineTo(wp.x, wp.y); sCtx.stroke();
         sCtx.setLineDash([]);
         
+        // Waypoint Circle
         sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "#93a1a1";
+        sCtx.lineWidth = 2;
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
     });
 
@@ -177,13 +188,12 @@ function draw() {
     sCtx.fillStyle = "#268bd2";
     sCtx.beginPath(); sCtx.arc(lastTarget.x, lastTarget.y, 8, 0, 7); sCtx.fill();
 
-    // Boat Hull
+    // Boat
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
     sCtx.strokeStyle = "#073642"; sCtx.lineWidth = 4;
     sCtx.strokeRect(-20,-12,40,24);
-    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(15,-6,10,12); // Bow
+    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(15,-6,10,12); 
     
-    // Wings with Red Sensor Dots
     boat.sails.forEach(s => {
         sCtx.save(); sCtx.translate(s.x, 0); sCtx.rotate(s.a);
         sCtx.fillStyle = "#2aa198"; sCtx.fillRect(-18, -3, 36, 6);

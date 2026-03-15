@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailing Sim: Full Control Restoration</title>
+    <title>Sailing Sim: Zero-Start Lock</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 300px; bottom: 0; background: #eee8d5; }
@@ -24,26 +24,26 @@
     
     <div class="telemetry">
         <strong>PHYSICS (NACA 0012)</strong><br>
-        SPD: <span id="spd-val">0</span> kts | CTE: <span id="cte-val">0</span><br>
-        W-CL: <span id="cl-val">0</span> | W-CD: <span id="cd-val">0</span><br>
-        H-CL: <span id="hcl-val">0</span> | H-AOA: <span id="h-aoa">0</span>°
+        SPD: <span id="spd-val">0.0</span> kts | CTE: <span id="cte-val">0</span><br>
+        W-CL: <span id="cl-val">0.0</span> | W-CD: <span id="cd-val">0.0</span><br>
+        H-CL: <span id="hcl-val">0.0</span> | H-AOA: <span id="h-aoa">0.0</span>°
     </div>
     
-    <label>WIND SPEED (KTS) <span class="val" id="wsv">15</span></label>
-    <input type="range" id="wSpd" min="0" max="80" value="15">
+    <label>WIND SPEED (KTS) <span class="val" id="wsv">0</span></label>
+    <input type="range" id="wSpd" min="0" max="80" value="0">
 
     <label>WIND DIRECTION <span class="val" id="wdv">45°</span></label>
     <input type="range" id="wDir" min="0" max="360" value="45">
 
     <hr>
 
-    <label>P-GAIN (STRIKE) <span class="val" id="pv">72</span></label>
+    <label>P-GAIN <span class="val" id="pv">72</span></label>
     <input type="range" id="gP" min="0" max="200" value="72">
     
-    <label>I-GAIN (STEADY) <span class="val" id="iv">0.8</span></label>
+    <label>I-GAIN <span class="val" id="iv">0.8</span></label>
     <input type="range" id="gI" min="0" max="10" step="0.1" value="0.8">
     
-    <label>D-GAIN (DAMPING) <span class="val" id="dv">15</span></label>
+    <label>D-GAIN <span class="val" id="dv">15</span></label>
     <input type="range" id="gD" min="1" max="100" value="15">
 
     <hr>
@@ -58,11 +58,11 @@ window.onload = function() {
     const AIR_DENSITY = 1.225;
     const WATER_DENSITY = 1025;
     
-    // Unified NACA 0012 Polar Data
     const POLAR = { 0:[0,0.01], 5:[0.5,0.02], 10:[1.0,0.04], 12.6:[1.2,0.06], 15:[1.4,0.1], 20:[0.8,0.3], 30:[0.5,0.6], 90:[0,1.2] };
 
     let Kp = 72, Ki = 0.8, Kd = 15;
-    let trueWind = { angle: 45 * Math.PI/180, speed: 15 * KNOTS_TO_FTS };
+    // EXPLICIT START AT ZERO
+    let trueWind = { angle: 45 * Math.PI/180, speed: 0 }; 
     let boat = { x:0, y:0, theta:0, omega:0, vx:0, vy:0, sails:[{x:14, a:0}, {x:-14, a:0}] };
     let waypoints = [], currentWP = 1, cteInt = 0, lastT = {x:0, y:0}, PX_PER_FT = 1;
 
@@ -88,7 +88,6 @@ window.onload = function() {
         waypoints = [{x:0,y:0,r:r}, {x:d,y:-d,r:r}, {x:d,y:d,r:r}, {x:-d,y:d,r:r}, {x:-d,y:-d,r:r}];
     }
 
-    // Input Handlers
     document.getElementById('wSpd').oninput = e => { trueWind.speed = +e.target.value * KNOTS_TO_FTS; document.getElementById('wsv').innerText = e.target.value; };
     document.getElementById('wDir').oninput = e => { trueWind.angle = +e.target.value * Math.PI/180; document.getElementById('wdv').innerText = e.target.value + "°"; };
     document.getElementById('gP').oninput = e => { Kp = +e.target.value; document.getElementById('pv').innerText = Kp; };
@@ -117,10 +116,11 @@ window.onload = function() {
 
         let rb = Math.atan2(lastT.y-boat.y, lastT.x-boat.x) - boat.theta;
         while(rb > Math.PI) rb -= 2*Math.PI; while(rb < -Math.PI) rb += 2*Math.PI;
+        
+        // Only rotate if there's enough velocity or wind to overcome inertia (simplification)
         boat.omega = Math.max(-4, Math.min(4, boat.omega + (rb * Kp - boat.omega * Kd) * dt));
         boat.theta += boat.omega * dt;
 
-        // Unified Physics
         let tFx = 0, tFy = 0;
         let windGlobal = trueWind.angle + Math.PI; 
         
@@ -179,7 +179,6 @@ window.onload = function() {
         waypoints.forEach((wp, i) => {
             let p = waypoints[i===0?waypoints.length-1:i-1];
             let ang = Math.atan2(wp.y-p.y, wp.x-p.x);
-            // 6px Corridors
             ctx.lineWidth = 6; ctx.strokeStyle = (i===currentWP)?"rgba(181,137,0,0.4)":"rgba(88,110,117,0.08)";
             ctx.beginPath();
             ctx.moveTo(p.x + wp.r*Math.cos(ang+1.57), p.y + wp.r*Math.sin(ang+1.57));
@@ -187,10 +186,8 @@ window.onload = function() {
             ctx.moveTo(p.x + wp.r*Math.cos(ang-1.57), p.y + wp.r*Math.sin(ang-1.57));
             ctx.lineTo(wp.x + wp.r*Math.cos(ang-1.57), wp.y + wp.r*Math.sin(ang-1.57));
             ctx.stroke();
-            // Circles
             ctx.lineWidth = 2; ctx.strokeStyle = (i===currentWP)?"#b58900":"#93a1a1";
             ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, 7); ctx.stroke();
-            // Green Wind Arrow
             ctx.save(); ctx.translate(wp.x, wp.y); ctx.rotate(trueWind.angle);
             ctx.strokeStyle = "#859900"; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(0,-20); ctx.lineTo(0,20); ctx.lineTo(-6,10); ctx.moveTo(0,20); ctx.lineTo(6,10); ctx.stroke();
             ctx.restore();
@@ -199,17 +196,15 @@ window.onload = function() {
         // Boat
         ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
         ctx.strokeStyle="#073642"; ctx.lineWidth=3; ctx.strokeRect(-18,-12,36,24);
-        ctx.fillStyle="#dc322f"; ctx.fillRect(12,-4,8,8); // Bow
-        
+        ctx.fillStyle="#dc322f"; ctx.fillRect(12,-4,8,8); 
         boat.sails.forEach(s => {
             ctx.save(); ctx.translate(s.x, 0); ctx.rotate(s.a);
             ctx.fillStyle="#2aa198"; ctx.fillRect(-14,-2.5,28,5);
-            ctx.fillStyle="#dc322f"; ctx.beginPath(); ctx.arc(14,0,4,0,7); ctx.fill(); // Leading Edge
+            ctx.fillStyle="#dc322f"; ctx.beginPath(); ctx.arc(14,0,4,0,7); ctx.fill(); 
             ctx.restore();
         });
         ctx.restore();
         
-        // Target
         ctx.fillStyle="#268bd2"; ctx.beginPath(); ctx.arc(lastT.x, lastT.y, 8, 0, 7); ctx.fill();
         ctx.restore();
     }

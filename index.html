@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Full PID Restored</title>
+    <title>Sailboat: Unified Half-Track Logic</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -16,6 +16,8 @@
         #chart-box { width: 100%; height: 180px; background: #001e26; margin-top: auto; border: 3px solid #268bd2; }
         .label { font-size: 11px; text-transform: uppercase; margin: 15px 0 5px 0; font-weight: bold; color: #859900; }
         #telemetry { font-size: 12px; color: #268bd2; background: #00212b; padding: 10px; border: 1px solid #586e75; }
+        .status-on { color: #859900; }
+        .status-off { color: #dc322f; }
     </style>
 </head>
 <body>
@@ -23,21 +25,19 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">FULL SYSTEM</h3>
+    <h3 style="margin:0; color:#b58900;">UNIFIED NAV</h3>
     <div id="telemetry">
-        LEG: <span id="leg-val">Origin -> WP1</span><br>
+        LEG: <span id="leg-val">...</span><br>
         CTE: <span id="cte-val">0</span> ft<br>
         I-OFFSET: <span id="corr-val">0</span> ft<br>
-        MODE: <span id="mode-val">DIRECT</span>
+        STATUS: <span id="mode-val">...</span>
     </div>
     
     <div class="label">Wind Controls</div>
-    <label style="font-size: 9px;">DIRECTION</label>
     <input type="range" id="windDir" min="0" max="360" value="45">
-    <label style="font-size: 9px;">SPEED (KTS)</label>
     <input type="range" id="windSpd" min="0" max="40" value="0">
 
-    <div class="label">CTE History</div>
+    <div class="label">CTE Chart</div>
     <div id="chart-box"><canvas id="chartCanvas"></canvas></div>
 </div>
 
@@ -88,44 +88,43 @@ function update() {
     let pA = waypoints[(currentWPIndex === 0) ? waypoints.length-1 : currentWPIndex-1];
     let pB = waypoints[currentWPIndex];
 
+    // 1. Path Geometry
     let dx = pB.x - pA.x, dy = pB.y - pA.y;
     let pathLen = Math.hypot(dx, dy);
     let ux = dx / pathLen, uy = dy / pathLen; 
     let nx = -uy, ny = ux; 
 
+    // 2. Boat Position relative to path
     let bdx = boat.x - pA.x, bdy = boat.y - pA.y;
-    let atd = bdx * ux + bdy * uy; 
-    let cte = bdx * nx + bdy * ny; 
+    let atd = bdx * ux + bdy * uy; // Progress along track
+    let cte = bdx * nx + bdy * ny; // Distance from track
 
-    let modeText = "";
+    // 3. UNIFIED TARGETING: Always target halfway between perpendicular and destination
+    let remainingDist = pathLen - atd;
+    let targetAt = atd + (remainingDist * 0.5);
     
-    // --- NAVIGATION LOGIC ---
-    if (Math.abs(cte) > pB.r) {
-        modeText = "INTERCEPT";
-        cteIntegral = 0;
-        let interceptDist = atd + (pathLen - atd) * 0.1;
-        lastTarget.x = pA.x + interceptDist * ux;
-        lastTarget.y = pA.y + interceptDist * uy;
-    } else {
-        modeText = "DIRECT";
-        // Tapered Integral Gain: 0.2
-        cteIntegral += (cte / PX_PER_FT) * 0.2 * 0.016; 
-        cteIntegral = Math.max(-400, Math.min(400, cteIntegral));
-        
-        // Target is the waypoint shifted by the integral correction
-        lastTarget.x = pB.x - (nx * cteIntegral * PX_PER_FT);
-        lastTarget.y = pB.y - (ny * cteIntegral * PX_PER_FT);
-    }
+    // Base target on the centerline
+    let targetBaseX = pA.x + targetAt * ux;
+    let targetBaseY = pA.y + targetAt * uy;
 
+    // 4. INTEGRAL CORRECTION (Memory)
+    // Only accumulate inside or at low speeds to prevent massive wind-up
+    cteIntegral += (cte / PX_PER_FT) * 0.2 * 0.016;
+    cteIntegral = Math.max(-400, Math.min(400, cteIntegral));
+
+    // Shift target perpendicularly to pull boat toward center
+    lastTarget.x = targetBaseX - (nx * cteIntegral * PX_PER_FT);
+    lastTarget.y = targetBaseY - (ny * cteIntegral * PX_PER_FT);
+
+    // 5. Steering & Physics
     let relBearing = norm(Math.atan2(lastTarget.y - boat.y, lastTarget.x - boat.x) - boat.theta);
     let relWind = norm((trueWind.angle + Math.PI) - boat.theta);
 
     if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-        cteIntegral = 0;
+        cteIntegral = 0; // Reset for new leg
     }
 
-    // Snappy P-Gain (12.0)
     boat.omega += (relBearing * 12.0 - boat.omega * 8.0) * 0.016;
     boat.theta = norm(boat.theta + boat.omega * 0.016);
     
@@ -136,12 +135,13 @@ function update() {
     boat.x += Math.cos(boat.theta) * thrust;
     boat.y += Math.sin(boat.theta) * thrust;
 
-    // Telemetry UI
+    // UI
+    let status = Math.abs(cte) < pB.r ? "IN CORRIDOR" : "RECOVERING";
     document.getElementById('leg-val').innerText = `${pA.id} -> ${pB.id}`;
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
     document.getElementById('corr-val').innerText = (cteIntegral).toFixed(1);
-    document.getElementById('mode-val').innerText = modeText;
-    document.getElementById('mode-val').className = (modeText === "DIRECT") ? "status-on" : "status-off";
+    document.getElementById('mode-val').innerText = status;
+    document.getElementById('mode-val').className = (status === "IN CORRIDOR") ? "status-on" : "status-off";
     
     history.push(cte/PX_PER_FT);
     if(history.length > chartCanvas.width) history.shift();
@@ -151,18 +151,14 @@ function draw() {
     sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
     sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
     
-    let pB = waypoints[currentWPIndex];
-
     waypoints.forEach((wp, i) => {
         let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
         let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
         
-        // Dash Centerline
         sCtx.setLineDash([10, 10]); sCtx.lineWidth = 2; sCtx.strokeStyle = "rgba(88, 110, 117, 0.4)";
         sCtx.beginPath(); sCtx.moveTo(prev.x, prev.y); sCtx.lineTo(wp.x, wp.y); sCtx.stroke();
         sCtx.setLineDash([]);
 
-        // Heavy Corridor (6px)
         sCtx.lineWidth = 6;
         sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(181, 137, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
         sCtx.beginPath();
@@ -176,11 +172,11 @@ function draw() {
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
     });
 
-    // Dynamic Blue Target
+    // Dynamic Target Dot
     sCtx.fillStyle = "#268bd2";
     sCtx.beginPath(); sCtx.arc(lastTarget.x, lastTarget.y, 8, 0, 7); sCtx.fill();
 
-    // Boat with Red Leading Edge Dots
+    // Boat
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
     sCtx.strokeStyle = "#073642"; sCtx.lineWidth = 4;
     sCtx.strokeRect(-18,-10,36,20);
@@ -189,13 +185,11 @@ function draw() {
     boat.sails.forEach(s => {
         sCtx.save(); sCtx.translate(s.x, 0); sCtx.rotate(s.a);
         sCtx.fillStyle = "#2aa198"; sCtx.fillRect(-15, -3, 30, 6);
-        sCtx.fillStyle = "#dc322f"; 
-        sCtx.beginPath(); sCtx.arc(15, 0, 4, 0, 7); sCtx.fill();
+        sCtx.fillStyle = "#dc322f"; sCtx.beginPath(); sCtx.arc(15, 0, 4, 0, 7); sCtx.fill();
         sCtx.restore();
     });
     sCtx.restore(); sCtx.restore();
 
-    // Charting
     cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
     cCtx.strokeStyle = "#b58900"; cCtx.lineWidth = 2;
     cCtx.beginPath();

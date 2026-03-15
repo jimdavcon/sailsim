@@ -2,6 +2,215 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <title>Sailboat: Final GFX & Physics Lock</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
+        #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
+        #ui-sidebar { 
+            position: absolute; top: 0; right: 0; width: 280px; bottom: 0; 
+            background: #073642; border-left: 5px solid #586e75; 
+            padding: 15px; box-sizing: border-box; color: #93a1a1;
+            display: flex; flex-direction: column;
+        }
+        canvas { width: 100%; height: 100%; display: block; }
+        .label { font-size: 11px; text-transform: uppercase; margin: 15px 0 5px 0; font-weight: bold; color: #859900; }
+        #telemetry { font-size: 12px; color: #268bd2; background: #00212b; padding: 10px; border: 1px solid #586e75; margin-bottom: 10px; }
+        input[type=range] { width: 100%; margin: 8px 0; }
+        .val-disp { float: right; color: #b58900; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="world-pane"><canvas id="simCanvas"></canvas></div>
+
+<div id="ui-sidebar">
+    <h3 style="margin:0; color:#b58900;">GFX STABLE</h3>
+    <div id="telemetry">
+        CTE: <span id="cte-val">0</span> ft<br>
+        HULL AOA (Leeway): <span id="hull-aoa" style="color:#dc322f">0</span>°<br>
+        FWD SPEED: <span id="fwd-spd" style="color:#859900">0</span> kts
+    </div>
+    
+    <div class="label">Control Gains</div>
+    <label>P-AUTHORITY <span class="val-disp" id="p-val">72</span></label>
+    <input type="range" id="gainP" min="0" max="150" value="72">
+
+    <label>I-INTEGRAL <span class="val-disp" id="i-val">0.8</span></label>
+    <input type="range" id="gainI" min="0" max="5" step="0.1" value="0.8">
+
+    <label>D-DAMPING <span class="val-disp" id="d-val">12</span></label>
+    <input type="range" id="gainD" min="0" max="50" value="12">
+
+    <div class="label">Atmospheric</div>
+    <label>WIND DIRECTION</label>
+    <input type="range" id="windDir" min="0" max="360" value="45">
+</div>
+
+<script>
+const simCanvas = document.getElementById('simCanvas');
+const sCtx = simCanvas.getContext('2d');
+
+let PX_PER_FT;
+const KNOTS_TO_FTS = 1.68781;
+const WATER_DENSITY_RATIO = 25.0; 
+let trueWind = { angle: 0.78, speed: 18 * KNOTS_TO_FTS }; 
+let waypoints = [];
+let currentWPIndex = 1;
+let cteIntegral = 0; 
+let lastTarget = {x: 0, y: 0};
+
+let Kp = 72, Ki = 0.8, Kd = 12;
+
+const boat = { 
+    x: 0, y: 0, theta: 0, omega: 0, 
+    vx: 0, vy: 0,
+    sails: [{x: 10, a:0}, {x: -10, a:0}] 
+};
+
+function norm(a) {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+}
+
+function resize() {
+    simCanvas.width = simCanvas.offsetWidth;
+    simCanvas.height = simCanvas.offsetHeight;
+    PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 2000;
+    const d = 500 * PX_PER_FT, r = 120 * PX_PER_FT;
+    waypoints = [
+        {x: 0, y: 0, r: r}, {x: d, y: -d, r: r},
+        {x: d, y: d, r: r}, {x: -d, y: d, r: r}, {x: -d, y: -d, r: r}
+    ];
+}
+
+document.getElementById('windDir').oninput = e => { trueWind.angle = e.target.value * Math.PI/180; };
+document.getElementById('gainP').oninput = e => { Kp = parseFloat(e.target.value); document.getElementById('p-val').innerText = Kp; };
+document.getElementById('gainI').oninput = e => { Ki = parseFloat(e.target.value); document.getElementById('i-val').innerText = Ki; };
+document.getElementById('gainD').oninput = e => { Kd = parseFloat(e.target.value); document.getElementById('d-val').innerText = Kd; };
+
+function update() {
+    const dt = 0.016;
+    let pA = waypoints[(currentWPIndex === 0) ? waypoints.length-1 : currentWPIndex-1];
+    let pB = waypoints[currentWPIndex];
+
+    let dx = pB.x - pA.x, dy = pB.y - pA.y;
+    let pathLen = Math.hypot(dx, dy);
+    let ux = dx / pathLen, uy = dy / pathLen; 
+    let nx = -uy, ny = ux; 
+
+    let bdx = boat.x - pA.x, bdy = boat.y - pA.y;
+    let atd = bdx * ux + bdy * uy; 
+    let cte = bdx * nx + bdy * ny; 
+
+    cteIntegral += (cte / PX_PER_FT) * Ki * dt;
+    if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
+        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
+        cteIntegral = 0;
+    }
+
+    let targetAt = atd + ((pathLen - atd) * 0.4);
+    lastTarget.x = (pA.x + targetAt * ux) - (nx * cteIntegral * PX_PER_FT);
+    lastTarget.y = (pA.y + targetAt * uy) - (ny * cteIntegral * PX_PER_FT);
+
+    let relBearing = norm(Math.atan2(lastTarget.y - boat.y, lastTarget.x - boat.x) - boat.theta);
+    boat.omega += (relBearing * Kp - boat.omega * Kd) * dt;
+    boat.theta = norm(boat.theta + boat.omega * dt);
+    
+    // WING PHYSICS
+    let targetAOA = 0.22; 
+    let windDirAtBoat = norm(trueWind.angle + Math.PI); 
+    let totalFx = 0, totalFy = 0;
+    
+    boat.sails.forEach(s => {
+        let localWind = norm(windDirAtBoat - boat.theta);
+        let side = Math.sign(Math.sin(localWind));
+        s.a = norm(localWind + (side * targetAOA)); // Correcting local rotation
+        
+        let lift = trueWind.speed * 1.3;
+        let drag = lift * 0.05;
+        totalFx += lift * Math.sin(targetAOA) - drag * Math.cos(targetAOA);
+        totalFy += (lift * Math.cos(targetAOA) + drag * Math.sin(targetAOA)) * side;
+    });
+
+    // HYDRO HULL AIRFOIL
+    let vFwd = boat.vx * Math.cos(boat.theta) + boat.vy * Math.sin(boat.theta);
+    let vLat = -boat.vx * Math.sin(boat.theta) + boat.vy * Math.cos(boat.theta);
+    let hullAOA = -Math.atan2(vLat, vFwd || 0.001); 
+    let hullLift = Math.sin(hullAOA) * Math.hypot(vFwd, vLat) * WATER_DENSITY_RATIO;
+    let hullDrag = Math.abs(vFwd) * 0.08; 
+
+    vFwd += (totalFx - hullDrag) * dt;
+    vLat += (totalFy + hullLift) * dt;
+    vFwd *= 0.99; vLat *= 0.96;
+
+    boat.vx = vFwd * Math.cos(boat.theta) - vLat * Math.sin(boat.theta);
+    boat.vy = vFwd * Math.sin(boat.theta) + vLat * Math.cos(boat.theta);
+    boat.x += boat.vx; boat.y += boat.vy;
+
+    document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
+    document.getElementById('hull-aoa').innerText = (hullAOA * 180/Math.PI).toFixed(1);
+    document.getElementById('fwd-spd').innerText = (vFwd / KNOTS_TO_FTS).toFixed(1);
+}
+
+function draw() {
+    sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
+    sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
+    
+    waypoints.forEach((wp, i) => {
+        let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
+        let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
+
+        // Green Wind Arrow
+        sCtx.save(); sCtx.translate(wp.x, wp.y); sCtx.rotate(trueWind.angle);
+        sCtx.strokeStyle = "#859900"; sCtx.lineWidth = 3;
+        sCtx.beginPath(); sCtx.moveTo(0, -20); sCtx.lineTo(0, 20);
+        sCtx.lineTo(-6, 10); sCtx.moveTo(0, 20); sCtx.lineTo(6, 10); sCtx.stroke();
+        sCtx.restore();
+
+        // 6px Corridor Rails
+        sCtx.lineWidth = 6;
+        sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(181, 137, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
+        sCtx.beginPath();
+        sCtx.moveTo(prev.x + wp.r*Math.cos(ang+1.57), prev.y + wp.r*Math.sin(ang+1.57));
+        sCtx.lineTo(wp.x + wp.r*Math.cos(ang+1.57), wp.y + wp.r*Math.sin(ang+1.57));
+        sCtx.moveTo(prev.x + wp.r*Math.cos(ang-1.57), prev.y + wp.r*Math.sin(ang-1.57));
+        sCtx.lineTo(wp.x + wp.r*Math.cos(ang-1.57), wp.y + wp.r*Math.sin(ang-1.57));
+        sCtx.stroke();
+
+        sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "#93a1a1";
+        sCtx.lineWidth = 2;
+        sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
+    });
+
+    // Target Dot
+    sCtx.fillStyle = "#268bd2";
+    sCtx.beginPath(); sCtx.arc(lastTarget.x, lastTarget.y, 8, 0, 7); sCtx.fill();
+
+    // Boat
+    sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
+    sCtx.strokeStyle = "#073642"; sCtx.lineWidth = 4;
+    sCtx.strokeRect(-20,-12,40,24);
+    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(15,-6,10,12); 
+    
+    // Wings with RED Leading Edges
+    boat.sails.forEach(s => {
+        sCtx.save(); sCtx.translate(s.x, 0); sCtx.rotate(s.a);
+        sCtx.fillStyle = "#2aa198"; sCtx.fillRect(-18, -3, 36, 6);
+        sCtx.fillStyle = "#dc322f"; sCtx.beginPath(); sCtx.arc(18, 0, 4, 0, 7); sCtx.fill();
+        sCtx.restore();
+    });
+    sCtx.restore(); sCtx.restore();
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+window.onresize = resize; resize(); loop();
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
     <title>Sailboat: Fixed Wing AOA Tracking</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }

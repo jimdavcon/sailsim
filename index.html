@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: High Integral Gain</title>
+    <title>Sailboat: Full Visual Debug</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -25,11 +25,10 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">PRECISION TRACKER</h3>
+    <h3 style="margin:0; color:#b58900;">VISUAL DEBUGGER</h3>
     <div id="telemetry">
         LEG: <span id="leg-val">Origin -> WP1</span><br>
         CTE: <span id="cte-val">0</span> ft<br>
-        iCTE: <span id="icte-val">0</span><br>
         MODE: <span id="mode-val">DIRECT</span>
     </div>
     
@@ -55,7 +54,8 @@ let trueWind = { angle: 0.78, speed: 0 };
 let waypoints = [];
 let currentWPIndex = 1;
 let history = [];
-let cteIntegral = 0; // Accumulator for integral gain
+let cteIntegral = 0;
+let lastTarget = {x: 0, y: 0};
 
 const boat = { x: 0, y: 0, theta: 0, omega: 0, sails: [{x: 5, a:0}, {x: -5, a:0}] };
 
@@ -97,38 +97,30 @@ function update() {
     let atd = bdx * ux + bdy * uy; 
     let cte = bdx * (-uy) + bdy * ux; 
 
-    let targetX, targetY;
     let modeText = "";
     
-    // --- INTEGRAL GAIN LOGIC ---
     if (Math.abs(cte) > pB.r) {
         modeText = "INTERCEPT";
-        cteIntegral = 0; // Reset integral when performing emergency re-entry
+        cteIntegral = 0;
         let interceptGain = 0.1; 
         let remainingPath = pathLen - atd;
         let interceptDist = atd + (remainingPath * interceptGain);
-        targetX = pA.x + interceptDist * ux;
-        targetY = pA.y + interceptDist * uy;
+        lastTarget.x = pA.x + interceptDist * ux;
+        lastTarget.y = pA.y + interceptDist * uy;
     } else {
         modeText = "DIRECT";
-        // Accumulate Integral when inside corridor
-        // Higher gain applied to the accumulation
         cteIntegral += (cte / PX_PER_FT) * 0.05; 
-        // Cap the integral to prevent wind-up
         cteIntegral = Math.max(-150, Math.min(150, cteIntegral));
-
-        // Adjust target based on accumulated error
-        // Effectively "tucking" the boat into the wind/current
-        targetX = pB.x + (-uy * cteIntegral * PX_PER_FT * 0.5);
-        targetY = pB.y + (ux * cteIntegral * PX_PER_FT * 0.5);
+        lastTarget.x = pB.x + (-uy * cteIntegral * PX_PER_FT * 0.5);
+        lastTarget.y = pB.y + (ux * cteIntegral * PX_PER_FT * 0.5);
     }
 
-    let relBearing = norm(Math.atan2(targetY - boat.y, targetX - boat.x) - boat.theta);
+    let relBearing = norm(Math.atan2(lastTarget.y - boat.y, lastTarget.x - boat.x) - boat.theta);
     let relWind = norm((trueWind.angle + Math.PI) - boat.theta);
 
     if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
         currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-        cteIntegral = 0; // Reset on waypoint hit
+        cteIntegral = 0;
     }
 
     boat.omega += (relBearing * 12.0 - boat.omega * 8.0) * 0.016;
@@ -143,7 +135,6 @@ function update() {
 
     document.getElementById('leg-val').innerText = `${pA.id} -> ${pB.id}`;
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
-    document.getElementById('icte-val').innerText = cteIntegral.toFixed(1);
     document.getElementById('mode-val').innerText = modeText;
     document.getElementById('mode-val').className = (modeText === "DIRECT") ? "status-on" : "status-off";
     
@@ -159,6 +150,14 @@ function draw() {
         let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
         let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
         
+        // 1. Dash-line centerline
+        sCtx.setLineDash([10, 10]);
+        sCtx.lineWidth = 2;
+        sCtx.strokeStyle = "rgba(88, 110, 117, 0.4)";
+        sCtx.beginPath(); sCtx.moveTo(prev.x, prev.y); sCtx.lineTo(wp.x, wp.y); sCtx.stroke();
+        sCtx.setLineDash([]);
+
+        // 2. Heavy Corridors
         sCtx.lineWidth = 6;
         sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(181, 137, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
         sCtx.beginPath();
@@ -168,23 +167,34 @@ function draw() {
         sCtx.lineTo(wp.x + wp.r*Math.cos(ang-1.57), wp.y + wp.r*Math.sin(ang-1.57));
         sCtx.stroke();
 
+        // 3. Waypoint Rings
         sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "#93a1a1";
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
 
+        // 4. Wind Arrows
         sCtx.save(); sCtx.translate(wp.x, wp.y); sCtx.rotate(trueWind.angle);
         sCtx.strokeStyle = "#268bd2"; sCtx.lineWidth = 3;
         sCtx.beginPath(); sCtx.moveTo(-30,0); sCtx.lineTo(30,0); sCtx.lineTo(20,-10); sCtx.moveTo(30,0); sCtx.lineTo(20,10);
         sCtx.stroke(); sCtx.restore();
     });
 
+    // 5. Target Destination Dot (Blue)
+    sCtx.fillStyle = "#268bd2";
+    sCtx.beginPath(); sCtx.arc(lastTarget.x, lastTarget.y, 8, 0, 7); sCtx.fill();
+
+    // 6. Boat Body & Wings
     sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
     sCtx.strokeStyle = "#073642"; sCtx.lineWidth = 4;
     sCtx.strokeRect(-18,-10,36,20);
-    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(12,-5,8,10);
+    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(12,-5,8,10); // Bow
     
     boat.sails.forEach(s => {
         sCtx.save(); sCtx.translate(s.x, 0); sCtx.rotate(s.a);
+        // Wing
         sCtx.fillStyle = "#2aa198"; sCtx.fillRect(-15, -3, 30, 6);
+        // Red dot on leading edge
+        sCtx.fillStyle = "#dc322f";
+        sCtx.beginPath(); sCtx.arc(15, 0, 4, 0, 7); sCtx.fill();
         sCtx.restore();
     });
     sCtx.restore(); sCtx.restore();

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: True Wind Wing Offset</title>
+    <title>Sailboat: Fixed Wing AOA Tracking</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -24,11 +24,11 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">WING OFFSET ACTIVE</h3>
+    <h3 style="margin:0; color:#b58900;">AOA LOCK ACTIVE</h3>
     <div id="telemetry">
         CTE: <span id="cte-val">0</span> ft<br>
-        HULL AOA: <span id="hull-aoa" style="color:#dc322f">0</span>°<br>
-        WING AOA: <span id="wing-aoa" style="color:#2aa198">0</span>°<br>
+        HULL AOA (Leeway): <span id="hull-aoa" style="color:#dc322f">0</span>°<br>
+        WING AOA (Target): <span id="wing-aoa" style="color:#2aa198">12.6</span>°<br>
         FWD SPEED: <span id="fwd-spd" style="color:#859900">0</span> kts
     </div>
     
@@ -45,8 +45,6 @@
     <div class="label">Atmospheric</div>
     <label>WIND DIRECTION</label>
     <input type="range" id="windDir" min="0" max="360" value="45">
-    <label>WIND SPEED (KTS)</label>
-    <input type="range" id="windSpd" min="0" max="40" value="15">
 </div>
 
 <script>
@@ -55,8 +53,8 @@ const sCtx = simCanvas.getContext('2d');
 
 let PX_PER_FT;
 const KNOTS_TO_FTS = 1.68781;
-const WATER_DENSITY_RATIO = 30.0; 
-let trueWind = { angle: 0.78, speed: 15 * KNOTS_TO_FTS }; 
+const WATER_DENSITY_RATIO = 25.0; 
+let trueWind = { angle: 0.78, speed: 18 * KNOTS_TO_FTS }; 
 let waypoints = [];
 let currentWPIndex = 1;
 let cteIntegral = 0; 
@@ -87,11 +85,10 @@ function resize() {
     ];
 }
 
+document.getElementById('windDir').oninput = e => { trueWind.angle = e.target.value * Math.PI/180; };
 document.getElementById('gainP').oninput = e => { Kp = parseFloat(e.target.value); document.getElementById('p-val').innerText = Kp; };
 document.getElementById('gainI').oninput = e => { Ki = parseFloat(e.target.value); document.getElementById('i-val').innerText = Ki; };
 document.getElementById('gainD').oninput = e => { Kd = parseFloat(e.target.value); document.getElementById('d-val').innerText = Kd; };
-document.getElementById('windDir').oninput = e => { trueWind.angle = e.target.value * Math.PI/180; };
-document.getElementById('windSpd').oninput = e => { trueWind.speed = e.target.value * KNOTS_TO_FTS; };
 
 function update() {
     const dt = 0.016;
@@ -113,68 +110,53 @@ function update() {
         cteIntegral = 0;
     }
 
-    let targetAt = atd + ((pathLen - atd) * 0.5);
+    let targetAt = atd + ((pathLen - atd) * 0.4);
     lastTarget.x = (pA.x + targetAt * ux) - (nx * cteIntegral * PX_PER_FT);
     lastTarget.y = (pA.y + targetAt * uy) - (ny * cteIntegral * PX_PER_FT);
 
     let relBearing = norm(Math.atan2(lastTarget.y - boat.y, lastTarget.x - boat.x) - boat.theta);
-    
-    // NAVIGATION STEERING
     boat.omega += (relBearing * Kp - boat.omega * Kd) * dt;
     boat.theta = norm(boat.theta + boat.omega * dt);
     
-    // WING LOGIC: Point into wind + offset for AOA
-    let targetAOA = 0.22; // 12.6 degrees
-    // Relative wind angle in world space (Wind blows FROM trueWind.angle TO boat)
-    let windVecX = Math.cos(trueWind.angle);
-    let windVecY = Math.sin(trueWind.angle);
-    
-    // Relative wind direction (pointing towards boat)
-    let windDirAtBoat = norm(trueWind.angle + Math.PI);
+    // WING LOGIC: Correcting the 90-degree visual bug
+    let targetAOA = 0.22; 
+    let windDirAtBoat = norm(trueWind.angle + Math.PI); // Direction wind is blowing TOWARD
     
     let totalFx = 0, totalFy = 0;
     boat.sails.forEach(s => {
-        // Find which side of the wing the wind is on relative to boat heading
-        let localWindAngle = norm(windDirAtBoat - boat.theta);
-        let side = Math.sign(Math.sin(localWindAngle));
+        // Find wind angle relative to boat
+        let localWind = norm(windDirAtBoat - boat.theta);
+        let side = Math.sign(Math.sin(localWind));
         
-        // Wing angle in world space = wind direction + offset
-        let worldWingAngle = windDirAtBoat + (side * targetAOA);
-        s.a = norm(worldWingAngle - boat.theta); // Boat-relative angle for drawing
+        // The wing angle relative to the boat should be: 
+        // (Local Wind Angle) + (Offset for AOA)
+        s.a = norm(localWind + (side * targetAOA));
         
-        // Lift/Drag calculation
-        let lift = trueWind.speed * 0.9; 
-        let drag = lift * 0.1;
-
-        // Force projected to boat frame
-        // Lift is perpendicular to wind, Drag is parallel
-        let wingFwd = lift * Math.sin(targetAOA) - drag * Math.cos(targetAOA);
-        let wingLat = (lift * Math.cos(targetAOA) + drag * Math.sin(targetAOA)) * side;
-        
-        totalFx += wingFwd;
-        totalFy += wingLat;
+        // Physics resolution
+        let lift = trueWind.speed * 1.2;
+        let drag = lift * 0.05;
+        totalFx += lift * Math.sin(targetAOA) - drag * Math.cos(targetAOA);
+        totalFy += (lift * Math.cos(targetAOA) + drag * Math.sin(targetAOA)) * side;
     });
 
-    // HYDRO HULL AIRFOIL
+    // HYDRO HULL
     let vFwd = boat.vx * Math.cos(boat.theta) + boat.vy * Math.sin(boat.theta);
     let vLat = -boat.vx * Math.sin(boat.theta) + boat.vy * Math.cos(boat.theta);
-    let hullAOA = -Math.atan2(vLat, vFwd || 0.01); 
+    let hullAOA = -Math.atan2(vLat, vFwd || 0.001); 
     let hullLift = Math.sin(hullAOA) * Math.hypot(vFwd, vLat) * WATER_DENSITY_RATIO;
-    let hullDrag = Math.abs(vFwd) * 0.15; 
+    let hullDrag = Math.abs(vFwd) * 0.1; 
 
-    let accFwd = totalFx - hullDrag;
-    let accLat = totalFy + hullLift;
-
-    vFwd += accFwd * dt; vLat += accLat * dt;
-    vFwd *= 0.98; vLat *= 0.95;
+    vFwd += (totalFx - hullDrag) * dt;
+    vLat += (totalFy + hullLift) * dt;
+    vFwd *= 0.99; vLat *= 0.96;
 
     boat.vx = vFwd * Math.cos(boat.theta) - vLat * Math.sin(boat.theta);
     boat.vy = vFwd * Math.sin(boat.theta) + vLat * Math.cos(boat.theta);
     boat.x += boat.vx; boat.y += boat.vy;
 
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
+    document.getElementById('corr-val').innerText = (cteIntegral).toFixed(1);
     document.getElementById('hull-aoa').innerText = (hullAOA * 180/Math.PI).toFixed(1);
-    document.getElementById('wing-aoa').innerText = (targetAOA * 180/Math.PI).toFixed(1);
     document.getElementById('fwd-spd').innerText = (vFwd / KNOTS_TO_FTS).toFixed(1);
 }
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: Reduced P-Gain / High I-Gain</title>
+    <title>Sailboat: Balanced PID</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -23,11 +23,11 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">TUNED PID</h3>
+    <h3 style="margin:0; color:#b58900;">BALANCED PID</h3>
     <div id="telemetry">
         CTE: <span id="cte-val">0</span> ft<br>
         I-OFFSET: <span id="corr-val">0</span> ft<br>
-        BRG ERROR: <span id="brg-val">0</span>°
+        P-GAIN: <span style="color:#859900">12.0</span>
     </div>
     
     <div class="label">Wind Controls</div>
@@ -85,28 +85,25 @@ function update() {
     let pA = waypoints[(currentWPIndex === 0) ? waypoints.length-1 : currentWPIndex-1];
     let pB = waypoints[currentWPIndex];
 
-    // Path Math
     let dx = pB.x - pA.x, dy = pB.y - pA.y;
     let pathLen = Math.hypot(dx, dy);
     let ux = dx / pathLen, uy = dy / pathLen; 
-    let nx = -uy, ny = ux; // Perpendicular vector
+    let nx = -uy, ny = ux; 
 
     let bdx = boat.x - pA.x, bdy = boat.y - pA.y;
     let atd = bdx * ux + bdy * uy; 
     let cte = bdx * nx + bdy * ny; 
 
-    // Target Calculation
     if (Math.abs(cte) > pB.r) {
         cteIntegral = 0; 
         let interceptDist = atd + (pathLen - atd) * 0.1;
         currentTarget.x = pA.x + interceptDist * ux;
         currentTarget.y = pA.y + interceptDist * uy;
     } else {
-        // Boosted Integral Gain: 0.15 -> 0.45
-        cteIntegral += (cte / PX_PER_FT) * 0.45 * 0.016; 
-        cteIntegral = Math.max(-500, Math.min(500, cteIntegral));
+        // REDUCED INTEGRAL GAIN: 0.45 -> 0.20
+        cteIntegral += (cte / PX_PER_FT) * 0.2 * 0.016; 
+        cteIntegral = Math.max(-400, Math.min(400, cteIntegral));
 
-        // The blue target moves perpendicular to the track to "pull" the boat
         currentTarget.x = pB.x - (nx * cteIntegral * PX_PER_FT);
         currentTarget.y = pB.y - (ny * cteIntegral * PX_PER_FT);
     }
@@ -119,209 +116,7 @@ function update() {
         cteIntegral = 0;
     }
 
-    // --- REDUCED PROPORTIONAL GAIN ---
-    // P-Gain: 12.0 -> 4.0 | Damping: 8.0 -> 4.0
-    boat.omega += (relBearing * 4.0 - boat.omega * 4.0) * 0.016;
-    boat.theta = norm(boat.theta + boat.omega * 0.016);
-    
-    let sailAOA = Math.sign(Math.sin(relWind)) * 0.22;
-    boat.sails.forEach(s => s.a = relWind + sailAOA);
-
-    let thrust = trueWind.speed * 0.5 * (1.0 - Math.abs(relBearing)/Math.PI);
-    boat.x += Math.cos(boat.theta) * thrust;
-    boat.y += Math.sin(boat.theta) * thrust;
-
-    document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
-    document.getElementById('corr-val').innerText = (cteIntegral).toFixed(1);
-    document.getElementById('brg-val').innerText = (relBearing * 180/Math.PI).toFixed(0);
-    
-    history.push(cte/PX_PER_FT);
-    if(history.length > chartCanvas.width) history.shift();
-}
-
-function draw() {
-    sCtx.clearRect(0,0,simCanvas.width, simCanvas.height);
-    sCtx.save(); sCtx.translate(simCanvas.width/2, simCanvas.height/2);
-    
-    let pB = waypoints[currentWPIndex];
-
-    waypoints.forEach((wp, i) => {
-        let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
-        let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
-        
-        sCtx.setLineDash([10, 10]); sCtx.lineWidth = 2; sCtx.strokeStyle = "rgba(88, 110, 117, 0.4)";
-        sCtx.beginPath(); sCtx.moveTo(prev.x, prev.y); sCtx.lineTo(wp.x, wp.y); sCtx.stroke();
-        sCtx.setLineDash([]);
-
-        sCtx.lineWidth = 6;
-        sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(181, 137, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
-        sCtx.beginPath();
-        sCtx.moveTo(prev.x + wp.r*Math.cos(ang+1.57), prev.y + wp.r*Math.sin(ang+1.57));
-        sCtx.lineTo(wp.x + wp.r*Math.cos(ang+1.57), wp.y + wp.r*Math.sin(ang+1.57));
-        sCtx.moveTo(prev.x + wp.r*Math.cos(ang-1.57), prev.y + wp.r*Math.sin(ang-1.57));
-        sCtx.lineTo(wp.x + wp.r*Math.cos(ang-1.57), wp.y + wp.r*Math.sin(ang-1.57));
-        sCtx.stroke();
-
-        sCtx.strokeStyle = (i === currentWPIndex) ? "#b58900" : "#93a1a1";
-        sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
-    });
-
-    // Correction vector visualization
-    sCtx.strokeStyle = "#b58900"; sCtx.lineWidth = 1;
-    sCtx.beginPath(); sCtx.moveTo(pB.x, pB.y); sCtx.lineTo(currentTarget.x, currentTarget.y); sCtx.stroke();
-
-    // Blue Target
-    sCtx.fillStyle = "#268bd2";
-    sCtx.beginPath(); sCtx.arc(currentTarget.x, currentTarget.y, 8, 0, 7); sCtx.fill();
-
-    // Boat
-    sCtx.save(); sCtx.translate(boat.x, boat.y); sCtx.rotate(boat.theta);
-    sCtx.strokeStyle = "#073642"; sCtx.lineWidth = 4;
-    sCtx.strokeRect(-18,-10,36,20);
-    sCtx.fillStyle = "#dc322f"; sCtx.fillRect(12,-5,8,10);
-    boat.sails.forEach(s => {
-        sCtx.save(); sCtx.translate(s.x, 0); sCtx.rotate(s.a);
-        sCtx.fillStyle = "#2aa198"; sCtx.fillRect(-15, -3, 30, 6);
-        sCtx.fillStyle = "#dc322f"; sCtx.beginPath(); sCtx.arc(15, 0, 4, 0, 7); sCtx.fill();
-        sCtx.restore();
-    });
-    sCtx.restore(); sCtx.restore();
-
-    cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
-    cCtx.strokeStyle = "#b58900"; cCtx.lineWidth = 2;
-    cCtx.beginPath();
-    history.forEach((h, i) => { let y = 90 - h*0.4; if(i===0) cCtx.moveTo(i, y); else cCtx.lineTo(i, y); });
-    cCtx.stroke();
-}
-
-function loop() { update(); draw(); requestAnimationFrame(loop); }
-window.onresize = resize; resize(); loop();
-</script>
-</body>
-</html><!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Sailboat: Active Integral Correction</title>
-    <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
-        #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
-        #ui-sidebar { 
-            position: absolute; top: 0; right: 0; width: 280px; bottom: 0; 
-            background: #073642; border-left: 5px solid #586e75; 
-            padding: 15px; box-sizing: border-box; color: #93a1a1;
-            display: flex; flex-direction: column;
-        }
-        canvas { width: 100%; height: 100%; display: block; }
-        #chart-box { width: 100%; height: 180px; background: #001e26; margin-top: auto; border: 3px solid #268bd2; }
-        .label { font-size: 11px; text-transform: uppercase; margin: 15px 0 5px 0; font-weight: bold; color: #859900; }
-        #telemetry { font-size: 12px; color: #268bd2; background: #00212b; padding: 10px; border: 1px solid #586e75; }
-    </style>
-</head>
-<body>
-
-<div id="world-pane"><canvas id="simCanvas"></canvas></div>
-
-<div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">INTEGRAL DEBUG</h3>
-    <div id="telemetry">
-        CTE: <span id="cte-val">0</span> ft<br>
-        CORRECTION: <span id="corr-val">0</span> ft<br>
-        MODE: <span id="mode-val">DIRECT</span>
-    </div>
-    
-    <div class="label">Wind Controls</div>
-    <input type="range" id="windDir" min="0" max="360" value="45">
-    <input type="range" id="windSpd" min="0" max="40" value="0">
-
-    <div class="label">CTE Chart (Yellow)</div>
-    <div id="chart-box"><canvas id="chartCanvas"></canvas></div>
-</div>
-
-<script>
-const simCanvas = document.getElementById('simCanvas');
-const sCtx = simCanvas.getContext('2d');
-const chartCanvas = document.getElementById('chartCanvas');
-const cCtx = chartCanvas.getContext('2d');
-
-let PX_PER_FT;
-const KNOTS_TO_FTS = 1.68781;
-let trueWind = { angle: 0.78, speed: 0 }; 
-let waypoints = [];
-let currentWPIndex = 1;
-let history = [];
-let cteIntegral = 0; 
-let currentTarget = {x: 0, y: 0};
-
-const boat = { x: 0, y: 0, theta: 0, omega: 0, sails: [{x: 5, a:0}, {x: -5, a:0}] };
-
-function norm(a) {
-    while (a > Math.PI) a -= 2 * Math.PI;
-    while (a < -Math.PI) a += 2 * Math.PI;
-    return a;
-}
-
-function resize() {
-    simCanvas.width = simCanvas.offsetWidth;
-    simCanvas.height = simCanvas.offsetHeight;
-    chartCanvas.width = chartCanvas.offsetWidth;
-    chartCanvas.height = chartCanvas.offsetHeight;
-    PX_PER_FT = Math.min(simCanvas.width, simCanvas.height) / 2000;
-    
-    const d = 500 * PX_PER_FT, r = 120 * PX_PER_FT;
-    waypoints = [
-        {x: 0,  y: 0,  r: r, id: "ORIGIN"},
-        {x: d,  y: -d, r: r, id: "WP1"},
-        {x: d,  y: d,  r: r, id: "WP2"},
-        {x: -d, y: d,  r: r, id: "WP3"},
-        {x: -d, y: -d, r: r, id: "WP4"}
-    ];
-}
-
-document.getElementById('windDir').oninput = e => trueWind.angle = e.target.value * Math.PI/180;
-document.getElementById('windSpd').oninput = e => trueWind.speed = e.target.value * KNOTS_TO_FTS;
-
-function update() {
-    let pA = waypoints[(currentWPIndex === 0) ? waypoints.length-1 : currentWPIndex-1];
-    let pB = waypoints[currentWPIndex];
-
-    let dx = pB.x - pA.x, dy = pB.y - pA.y;
-    let pathLen = Math.hypot(dx, dy);
-    let ux = dx / pathLen, uy = dy / pathLen; // Along-track unit vector
-    let nx = -uy, ny = ux; // Perpendicular (Normal) unit vector
-
-    let bdx = boat.x - pA.x, bdy = boat.y - pA.y;
-    let atd = bdx * ux + bdy * uy; 
-    let cte = bdx * nx + bdy * ny; // Cross-track error in pixels
-
-    let modeText = "";
-    
-    if (Math.abs(cte) > pB.r) {
-        modeText = "INTERCEPT";
-        cteIntegral = 0; 
-        let interceptDist = atd + (pathLen - atd) * 0.1;
-        currentTarget.x = pA.x + interceptDist * ux;
-        currentTarget.y = pA.y + interceptDist * uy;
-    } else {
-        modeText = "DIRECT";
-        // INCREASED INTEGRAL GAIN: 0.05 -> 0.15 for faster response
-        cteIntegral += (cte / PX_PER_FT) * 0.15; 
-        cteIntegral = Math.max(-300, Math.min(300, cteIntegral)); // Wide enough to counter strong wind
-
-        // Target = Waypoint + (Normal Vector * -Integral)
-        // Note: Negative sign because if CTE is positive (right), we aim negative (left)
-        currentTarget.x = pB.x - (nx * cteIntegral * PX_PER_FT);
-        currentTarget.y = pB.y - (ny * cteIntegral * PX_PER_FT);
-    }
-
-    let relBearing = norm(Math.atan2(currentTarget.y - boat.y, currentTarget.x - boat.x) - boat.theta);
-    let relWind = norm((trueWind.angle + Math.PI) - boat.theta);
-
-    if (Math.hypot(pB.x - boat.x, pB.y - boat.y) < pB.r) {
-        currentWPIndex = (currentWPIndex + 1) % waypoints.length;
-        cteIntegral = 0;
-    }
-
+    // RESTORED PROPORTIONAL GAIN (12.0)
     boat.omega += (relBearing * 12.0 - boat.omega * 8.0) * 0.016;
     boat.theta = norm(boat.theta + boat.omega * 0.016);
     
@@ -333,8 +128,7 @@ function update() {
     boat.y += Math.sin(boat.theta) * thrust;
 
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
-    document.getElementById('corr-val').innerText = (-cteIntegral).toFixed(0);
-    document.getElementById('mode-val').innerText = modeText;
+    document.getElementById('corr-val').innerText = (cteIntegral).toFixed(1);
     
     history.push(cte/PX_PER_FT);
     if(history.length > chartCanvas.width) history.shift();
@@ -350,15 +144,12 @@ function draw() {
         let prev = (i === 0) ? waypoints[waypoints.length - 1] : waypoints[i-1];
         let ang = Math.atan2(wp.y - prev.y, wp.x - prev.x);
         
-        // Dashed Centerlines
         sCtx.setLineDash([10, 10]); sCtx.lineWidth = 2; sCtx.strokeStyle = "rgba(88, 110, 117, 0.4)";
         sCtx.beginPath(); sCtx.moveTo(prev.x, prev.y); sCtx.lineTo(wp.x, wp.y); sCtx.stroke();
         sCtx.setLineDash([]);
 
-        // Heavy Corridors (6px)
         sCtx.lineWidth = 6;
         sCtx.strokeStyle = (i === currentWPIndex) ? "rgba(181, 137, 0, 0.4)" : "rgba(88, 110, 117, 0.1)";
-        sCtx.strokeRect; // Placeholder for logic
         sCtx.beginPath();
         sCtx.moveTo(prev.x + wp.r*Math.cos(ang+1.57), prev.y + wp.r*Math.sin(ang+1.57));
         sCtx.lineTo(wp.x + wp.r*Math.cos(ang+1.57), wp.y + wp.r*Math.sin(ang+1.57));
@@ -370,11 +161,11 @@ function draw() {
         sCtx.beginPath(); sCtx.arc(wp.x, wp.y, wp.r, 0, 7); sCtx.stroke();
     });
 
-    // Integral Offset Line (Yellow line from WP center to Target)
+    // Visual Correction Vector
     sCtx.strokeStyle = "#b58900"; sCtx.lineWidth = 1;
     sCtx.beginPath(); sCtx.moveTo(pB.x, pB.y); sCtx.lineTo(currentTarget.x, currentTarget.y); sCtx.stroke();
 
-    // Blue Target Dot
+    // Blue Target
     sCtx.fillStyle = "#268bd2";
     sCtx.beginPath(); sCtx.arc(currentTarget.x, currentTarget.y, 8, 0, 7); sCtx.fill();
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sailboat: High-Speed Integral Recovery</title>
+    <title>Sailboat: High P-Gain Damped Oscillation</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
         #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
@@ -23,19 +23,19 @@
 <div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="margin:0; color:#b58900;">AGGRESSIVE I-GAIN</h3>
+    <h3 style="margin:0; color:#b58900;">DAMPED OSCILLATOR</h3>
     <div id="telemetry">
-        LEG: <span id="leg-val">...</span><br>
         CTE: <span id="cte-val">0</span> ft<br>
-        I-OFFSET: <span id="corr-val">0</span> ft<br>
-        I-GAIN: <span style="color:#268bd2">1.2</span>
+        P-GAIN: <span style="color:#cb4b16">35.0</span><br>
+        I-GAIN: <span style="color:#268bd2">1.2</span><br>
+        OMEGA: <span id="omega-val">0</span>
     </div>
     
     <div class="label">Wind Controls</div>
     <input type="range" id="windDir" min="0" max="360" value="45">
     <input type="range" id="windSpd" min="0" max="40" value="0">
 
-    <div class="label">CTE Chart</div>
+    <div class="label">CTE Chart (Dynamic)</div>
     <div id="chart-box"><canvas id="chartCanvas"></canvas></div>
 </div>
 
@@ -95,17 +95,17 @@ function update() {
     let atd = bdx * ux + bdy * uy; 
     let cte = bdx * nx + bdy * ny; 
 
-    // --- AGGRESSIVE INTEGRAL GAIN (1.2) ---
+    // Aggressive Integral
     cteIntegral += (cte / PX_PER_FT) * 1.2 * 0.016;
     cteIntegral = Math.max(-600, Math.min(600, cteIntegral));
 
-    // Target halfway along the remaining corridor
+    // Target Logic: Halfway to destination
     let remainingDist = pathLen - atd;
     let targetAt = atd + (remainingDist * 0.5);
     let targetBaseX = pA.x + targetAt * ux;
     let targetBaseY = pA.y + targetAt * uy;
 
-    // Shift target perpendicularly to integrate out the error
+    // Shift target perpendicularly
     lastTarget.x = targetBaseX - (nx * cteIntegral * PX_PER_FT);
     lastTarget.y = targetBaseY - (ny * cteIntegral * PX_PER_FT);
 
@@ -117,7 +117,10 @@ function update() {
         cteIntegral = 0;
     }
 
-    boat.omega += (relBearing * 12.0 - boat.omega * 8.0) * 0.016;
+    // --- HIGH P-GAIN WITH DAMPING ---
+    // P = 35.0 (Authority)
+    // D = 15.0 (Damping - adjusted up from 8.0 to handle high P)
+    boat.omega += (relBearing * 35.0 - boat.omega * 15.0) * 0.016;
     boat.theta = norm(boat.theta + boat.omega * 0.016);
     
     let sailAOA = Math.sign(Math.sin(relWind)) * 0.22;
@@ -127,9 +130,8 @@ function update() {
     boat.x += Math.cos(boat.theta) * thrust;
     boat.y += Math.sin(boat.theta) * thrust;
 
-    document.getElementById('leg-val').innerText = `${pA.id} -> ${pB.id}`;
     document.getElementById('cte-val').innerText = (cte/PX_PER_FT).toFixed(0);
-    document.getElementById('corr-val').innerText = (cteIntegral).toFixed(1);
+    document.getElementById('omega-val').innerText = boat.omega.toFixed(2);
     
     history.push(cte/PX_PER_FT);
     if(history.length > chartCanvas.width) history.shift();
@@ -177,7 +179,7 @@ function draw() {
     sCtx.restore(); sCtx.restore();
 
     cCtx.fillStyle = "#001e26"; cCtx.fillRect(0,0,chartCanvas.width, chartCanvas.height);
-    cCtx.strokeStyle = "#b58900"; cCtx.lineWidth = 2;
+    cCtx.strokeStyle = "#cb4b16"; cCtx.lineWidth = 2;
     cCtx.beginPath();
     history.forEach((h, i) => { let y = 90 - h*0.4; if(i===0) cCtx.moveTo(i, y); else cCtx.lineTo(i, y); });
     cCtx.stroke();

@@ -2,6 +2,197 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <title>Sailing Sim: Unified NACA 0012</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; color: #93a1a1; font-family: monospace; }
+        #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
+        #ui-sidebar { position: absolute; top: 0; right: 0; width: 280px; bottom: 0; background: #073642; border-left: 4px solid #586e75; padding: 15px; box-sizing: border-box; }
+        canvas { width: 100%; height: 100%; display: block; }
+        .telemetry { background: #00212b; padding: 10px; border: 1px solid #586e75; font-size: 11px; margin-bottom: 10px; color: #268bd2; }
+        input[type=range] { width: 100%; margin: 8px 0; }
+        label { font-size: 10px; font-weight: bold; color: #859900; display: block; margin-top: 5px; }
+        .val { float: right; color: #b58900; }
+    </style>
+</head>
+<body>
+
+<div id="world-pane"><canvas id="simCanvas"></canvas></div>
+
+<div id="ui-sidebar">
+    <h3 style="color:#b58900; margin-top:0;">UNIFIED NACA 0012</h3>
+    <div class="telemetry">
+        WING CL: <span id="cl-val">0</span> | CD: <span id="cd-val">0</span><br>
+        HULL CL: <span id="hcl-val">0</span> | CD: <span id="hcd-val">0</span><br>
+        LEEWAY (Hull AOA): <span id="h-aoa">0</span>°<br>
+        SPEED: <span id="spd-val">0</span> kts
+    </div>
+    
+    <label>WIND SPEED (KTS) <span class="val" id="wsv">0</span></label>
+    <input type="range" id="wSpd" min="0" max="50" value="0">
+
+    <label>WIND DIRECTION <span class="val" id="wdv">45°</span></label>
+    <input type="range" id="wDir" min="0" max="360" value="45">
+
+    <hr style="border:0; border-top:1px solid #586e75; margin:15px 0;">
+    <label>P-GAIN <span class="val" id="pv">72</span></label>
+    <input type="range" id="gP" min="0" max="150" value="72">
+    <label>I-GAIN <span class="val" id="iv">0.8</span></label>
+    <input type="range" id="gI" min="0" max="5" step="0.1" value="0.8">
+</div>
+
+<script>
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+const KNOTS_TO_FTS = 1.68781;
+const AIR_DENSITY = 1.225;
+const WATER_DENSITY = 1025;
+
+// --- SHARED NACA 0012 LOOKUP ---
+const NACA_0012 = {
+    0: [0.0, 0.008], 5: [0.5, 0.012], 10: [1.0, 0.035], 12.6: [1.2, 0.055], 
+    15: [1.4, 0.09], 20: [0.75, 0.25], 30: [0.5, 0.5], 90: [0.0, 1.2]
+};
+
+function getCoeffs(aoaRad) {
+    let deg = Math.abs(aoaRad * 180 / Math.PI);
+    let keys = Object.keys(NACA_0012).map(Number).sort((a,b) => a-b);
+    let cl = 0, cd = 1.2;
+    for (let i = 0; i < keys.length - 1; i++) {
+        if (deg >= keys[i] && deg <= keys[i+1]) {
+            let t = (deg - keys[i]) / (keys[i+1] - keys[i]);
+            cl = NACA_0012[keys[i]][0] + t * (NACA_0012[keys[i+1]][0] - NACA_0012[keys[i]][0]);
+            cd = NACA_0012[keys[i]][1] + t * (NACA_0012[keys[i+1]][1] - NACA_0012[keys[i]][1]);
+            break;
+        }
+    }
+    return { cl: cl * Math.sign(aoaRad), cd: cd };
+}
+
+let Kp = 72, Ki = 0.8, Kd = 12;
+let PX_PER_FT = 1;
+let trueWind = { angle: 45 * Math.PI/180, speed: 0 }; 
+let waypoints = [], currentWP = 1, cteInt = 0, lastT = {x:0, y:0};
+const boat = { x:0, y:0, theta:0, omega:0, vx:0, vy:0, sails:[{x:12, a:0}, {x:-12, a:0}] };
+
+function resize() {
+    canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+    PX_PER_FT = Math.min(canvas.width, canvas.height) / 2000;
+    const d = 550 * PX_PER_FT, r = 120 * PX_PER_FT;
+    waypoints = [{x:0,y:0,r:r}, {x:d,y:-d,r:r}, {x:d,y:d,r:r}, {x:-d,y:d,r:r}, {x:-d,y:-d,r:r}];
+}
+
+document.getElementById('wSpd').oninput = e => { trueWind.speed = +e.target.value * KNOTS_TO_FTS; document.getElementById('wsv').innerText = e.target.value; };
+document.getElementById('wDir').oninput = e => { trueWind.angle = +e.target.value * Math.PI/180; document.getElementById('wdv').innerText = e.target.value + "°"; };
+
+function update() {
+    const dt = 0.016;
+    let pA = waypoints[currentWP === 0 ? waypoints.length-1 : currentWP-1];
+    let pB = waypoints[currentWP];
+    let dx = pB.x-pA.x, dy = pB.y-pA.y, d = Math.hypot(dx,dy);
+    let ux = dx/d, uy = dy/d, nx = -uy, ny = ux;
+    let bx = boat.x-pA.x, by = boat.y-pA.y;
+    let atd = bx*ux + by*uy, cte = bx*nx + by*ny;
+
+    cteInt += (cte/PX_PER_FT) * Ki * dt;
+    if (Math.hypot(pB.x-boat.x, pB.y-boat.y) < pB.r) { currentWP = (currentWP+1)%waypoints.length; cteInt = 0; }
+
+    let pAng = Math.atan2(dy, dx), wAng = (trueWind.angle + Math.PI);
+    let wDiff = Math.abs(pAng - wAng);
+    while(wDiff > Math.PI) wDiff = Math.abs(wDiff - 2*Math.PI);
+    
+    let tOff = (wDiff < 0.7) ? (cte > 0 ? 180 : -180) * PX_PER_FT : 0;
+    let tAt = atd + (d-atd)*0.4;
+    lastT.x = (pA.x + tAt*ux) - (nx * (cteInt * PX_PER_FT + tOff));
+    lastT.y = (pA.y + tAt*uy) - (ny * (cteInt * PX_PER_FT + tOff));
+
+    let rb = Math.atan2(lastT.y-boat.y, lastT.x-boat.x) - boat.theta;
+    while(rb > Math.PI) rb -= 2*Math.PI; while(rb < -Math.PI) rb += 2*Math.PI;
+    boat.omega += (rb * Kp - boat.omega * Kd) * dt;
+    boat.theta += boat.omega * dt;
+
+    // --- SHARED PHYSICS ---
+    let tFx = 0, tFy = 0;
+    
+    // 1. Air Wings
+    boat.sails.forEach(s => {
+        let relW = (trueWind.angle + Math.PI) - boat.theta;
+        while(relW > Math.PI) relW -= 2*Math.PI; while(relW < -Math.PI) relW += 2*Math.PI;
+        let side = Math.sign(Math.sin(relW));
+        let aoa = 0.22; // 12.6 deg target
+        s.a = relW + (side * aoa);
+
+        let c = getCoeffs(aoa);
+        let q = 0.5 * AIR_DENSITY * Math.pow(trueWind.speed, 2) * 5.0; // Area factor
+        tFx += (c.cl * Math.sin(aoa) - c.cd * Math.cos(aoa)) * q;
+        tFy += (c.cl * Math.cos(aoa) + c.cd * Math.sin(aoa)) * side * q;
+        document.getElementById('cl-val').innerText = c.cl.toFixed(2);
+        document.getElementById('cd-val').innerText = c.cd.toFixed(2);
+    });
+
+    // 2. Water Hull (The same Airfoil in Water)
+    let vF = boat.vx*Math.cos(boat.theta) + boat.vy*Math.sin(boat.theta);
+    let vL = -boat.vx*Math.sin(boat.theta) + boat.vy*Math.cos(boat.theta);
+    let hAOA = -Math.atan2(vL, vF || 0.001);
+    let hc = getCoeffs(hAOA);
+    
+    let hq = 0.5 * WATER_DENSITY * (vF*vF + vL*vL) * 0.15; // Small chord to balance density
+    let hLift = (hc.cl * Math.cos(hAOA) + hc.cd * Math.sin(hAOA)) * hq;
+    let hDrag = (hc.cd * Math.cos(hAOA) - hc.cl * Math.sin(hAOA)) * hq;
+    
+    vF += (tFx - hDrag - Math.abs(vF)*0.2) * dt;
+    vL += (tFy + hLift) * dt;
+    vF *= 0.99; vL *= 0.92;
+    
+    boat.vx = vF*Math.cos(boat.theta) - vL*Math.sin(boat.theta);
+    boat.vy = vF*Math.sin(boat.theta) + vL*Math.cos(boat.theta);
+    boat.x += boat.vx; boat.y += boat.vy;
+
+    document.getElementById('hcl-val').innerText = hc.cl.toFixed(2);
+    document.getElementById('hcd-val').innerText = hc.cd.toFixed(2);
+    document.getElementById('h-aoa').innerText = (hAOA*180/Math.PI).toFixed(1);
+    document.getElementById('spd-val').innerText = (vF/KNOTS_TO_FTS).toFixed(1);
+}
+
+function draw() {
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+    ctx.save(); ctx.translate(canvas.width/2, canvas.height/2);
+    
+    waypoints.forEach((wp, i) => {
+        let p = waypoints[i===0?waypoints.length-1:i-1];
+        ctx.lineWidth=6; ctx.strokeStyle = (i===currentWP)?"rgba(181,137,0,0.4)":"rgba(88,110,117,0.05)";
+        ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, 7); ctx.stroke();
+        ctx.save(); ctx.translate(wp.x, wp.y); ctx.rotate(trueWind.angle);
+        ctx.strokeStyle = "#859900"; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(0,-15); ctx.lineTo(0,15); ctx.stroke(); ctx.restore();
+    });
+
+    // No-Go Zone
+    ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(trueWind.angle + Math.PI);
+    ctx.fillStyle = "rgba(220, 50, 47, 0.12)";
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0, 120, -0.5, 0.5); ctx.fill(); ctx.restore();
+
+    // Target & Boat
+    ctx.fillStyle="#268bd2"; ctx.beginPath(); ctx.arc(lastT.x, lastT.y, 6, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
+    ctx.strokeStyle="#073642"; ctx.lineWidth=3; ctx.strokeRect(-15,-10,30,20);
+    ctx.fillStyle="#dc322f"; ctx.fillRect(10,-4,8,8);
+    boat.sails.forEach(s => {
+        ctx.save(); ctx.translate(s.x, 0); ctx.rotate(s.a);
+        ctx.fillStyle="#2aa198"; ctx.fillRect(-12,-2,24,4);
+        ctx.fillStyle="#dc322f"; ctx.beginPath(); ctx.arc(12,0,3,0,7); ctx.fill();
+        ctx.restore();
+    });
+    ctx.restore(); ctx.restore();
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+window.addEventListener('resize', resize);
+resize(); loop();
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
     <title>Sailing Sim: Default Zero Wind</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; color: #93a1a1; font-family: monospace; }

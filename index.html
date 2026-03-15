@@ -2,56 +2,57 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sailing Sim: Hard Reset</title>
+    <title>Sailing Sim: Full Restoration</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: 'Courier New', monospace; }
-        #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; border: 5px solid #073642; box-sizing: border-box; }
-        #ui-sidebar { position: absolute; top: 0; right: 0; width: 280px; bottom: 0; background: #073642; color: #93a1a1; padding: 15px; box-sizing: border-box; border-left: 2px solid #586e75; z-index: 10; }
-        canvas { width: 100%; height: 100%; display: block; background: #eee8d5; }
-        .telemetry { background: #00212b; padding: 8px; border: 1px solid #586e75; font-size: 11px; color: #268bd2; margin-bottom: 10px; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #002b36; font-family: monospace; }
+        #world-pane { position: absolute; top: 0; left: 0; right: 280px; bottom: 0; background: #eee8d5; }
+        #ui-sidebar { position: absolute; top: 0; right: 0; width: 280px; bottom: 0; background: #073642; color: #93a1a1; padding: 15px; box-sizing: border-box; border-left: 4px solid #586e75; z-index: 10; }
+        canvas { width: 100%; height: 100%; display: block; }
+        .telemetry { background: #00212b; padding: 10px; border: 1px solid #586e75; font-size: 11px; color: #268bd2; margin-bottom: 10px; }
         label { font-size: 10px; font-weight: bold; color: #859900; display: block; margin-top: 5px; }
-        input[type=range] { width: 100%; }
+        input[type=range] { width: 100%; margin: 5px 0; }
         .val { float: right; color: #b58900; }
     </style>
 </head>
 <body>
 
-<div id="world-pane">
-    <canvas id="simCanvas"></canvas>
-</div>
+<div id="world-pane"><canvas id="simCanvas"></canvas></div>
 
 <div id="ui-sidebar">
-    <h3 style="color:#b58900; margin:0 0 10px 0;">NACA 0012 LOCK</h3>
+    <h3 style="color:#b58900; margin-top:0;">NACA 0012 FULL</h3>
     <div class="telemetry">
-        STATUS: <span id="sim-status" style="color:#859900">BOOTING...</span><br>
-        SPEED: <span id="spd-val">0</span> kts<br>
-        H-AOA: <span id="h-aoa">0</span>°<br>
-        W-CL: <span id="cl-val">0</span> | H-CL: <span id="hcl-val">0</span>
+        SPD: <span id="spd-val">0</span> kts | CTE: <span id="cte-val">0</span><br>
+        H-AOA: <span id="h-aoa">0</span>° | H-CL: <span id="hcl-val">0</span><br>
+        W-CL: <span id="cl-val">0</span> | W-CD: <span id="cd-val">0</span>
     </div>
     
     <label>WIND SPEED (KTS) <span class="val" id="wsv">0</span></label>
-    <input type="range" id="wSpd" min="0" max="50" value="0">
+    <input type="range" id="wSpd" min="0" max="60" value="0">
 
     <label>WIND DIRECTION <span class="val" id="wdv">45°</span></label>
     <input type="range" id="wDir" min="0" max="360" value="45">
+
+    <hr style="border:0; border-top:1px solid #586e75; margin:10px 0;">
 
     <label>P-GAIN <span class="val" id="pv">72</span></label>
     <input type="range" id="gP" min="0" max="150" value="72">
     
     <label>I-GAIN <span class="val" id="iv">0.8</span></label>
     <input type="range" id="gI" min="0" max="5" step="0.1" value="0.8">
+    
+    <label>D-GAIN <span class="val" id="dv">12</span></label>
+    <input type="range" id="gD" min="0" max="50" value="12">
 </div>
 
 <script>
 window.onload = function() {
     const canvas = document.getElementById('simCanvas');
     const ctx = canvas.getContext('2d');
-    const status = document.getElementById('sim-status');
-    
     const KNOTS_TO_FTS = 1.68781;
     const AIR_DENSITY = 1.225;
     const WATER_DENSITY = 1025;
+    
+    // Unified NACA 0012 Profile
     const POLAR = { 0:[0,0.008], 5:[0.5,0.012], 10:[1.0,0.035], 12.6:[1.2,0.055], 15:[1.4,0.09], 20:[0.75,0.25], 30:[0.5,0.5], 90:[0,1.2] };
 
     let Kp = 72, Ki = 0.8, Kd = 12;
@@ -75,19 +76,19 @@ window.onload = function() {
     }
 
     function resize() {
-        canvas.width = canvas.offsetWidth;
-        canvas.height = canvas.offsetHeight;
-        PX_PER_FT = Math.min(canvas.width, canvas.height) / 1800;
-        const d = 500 * PX_PER_FT, r = 100 * PX_PER_FT;
+        canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
+        PX_PER_FT = Math.min(canvas.width, canvas.height) / 2000;
+        const d = 550 * PX_PER_FT, r = 120 * PX_PER_FT;
         waypoints = [{x:0,y:0,r:r}, {x:d,y:-d,r:r}, {x:d,y:d,r:r}, {x:-d,y:d,r:r}, {x:-d,y:-d,r:r}];
     }
 
     document.getElementById('wSpd').oninput = e => { trueWind.speed = +e.target.value * KNOTS_TO_FTS; document.getElementById('wsv').innerText = e.target.value; };
     document.getElementById('wDir').oninput = e => { trueWind.angle = +e.target.value * Math.PI/180; document.getElementById('wdv').innerText = e.target.value + "°"; };
+    document.getElementById('gP').oninput = e => { Kp = +e.target.value; document.getElementById('pv').innerText = Kp; };
+    document.getElementById('gI').oninput = e => { Ki = +e.target.value; document.getElementById('iv').innerText = Ki; };
+    document.getElementById('gD').oninput = e => { Kd = +e.target.value; document.getElementById('dv').innerText = Kd; };
 
     function loop() {
-        status.innerText = "RUNNING";
-        // Update Logic
         const dt = 0.016;
         let pA = waypoints[currentWP === 0 ? waypoints.length-1 : currentWP-1];
         let pB = waypoints[currentWP];
@@ -98,41 +99,43 @@ window.onload = function() {
 
         if (Math.hypot(pB.x-boat.x, pB.y-boat.y) < pB.r) { currentWP = (currentWP+1)%waypoints.length; cteInt = 0; }
         
+        // Upwind Beating Logic
         let pAng = Math.atan2(dy, dx), wAng = (trueWind.angle + Math.PI);
         let wDiff = Math.abs(pAng - wAng);
         while(wDiff > Math.PI) wDiff = Math.abs(wDiff - 2*Math.PI);
-        let tOff = (wDiff < 0.7) ? (cte > 0 ? 150 : -150) * PX_PER_FT : 0;
+        let tOff = (wDiff < 0.75) ? (cte > 0 ? 180 : -180) * PX_PER_FT : 0;
         
         cteInt += (cte/PX_PER_FT) * Ki * dt;
-        let targetX = (pA.x + (atd + (dist-atd)*0.4)*ux) - (nx * (cteInt*PX_PER_FT + tOff));
-        let targetY = (pA.y + (atd + (dist-atd)*0.4)*uy) - (ny * (cteInt*PX_PER_FT + tOff));
-        lastT = {x: targetX, y: targetY};
+        lastT.x = (pA.x + (atd + (dist-atd)*0.4)*ux) - (nx * (cteInt*PX_PER_FT + tOff));
+        lastT.y = (pA.y + (atd + (dist-atd)*0.4)*uy) - (ny * (cteInt*PX_PER_FT + tOff));
 
-        let rb = Math.atan2(targetY-boat.y, targetX-boat.x) - boat.theta;
+        let rb = Math.atan2(lastT.y-boat.y, lastT.x-boat.x) - boat.theta;
         while(rb > Math.PI) rb -= 2*Math.PI; while(rb < -Math.PI) rb += 2*Math.PI;
         boat.omega += (rb * Kp - boat.omega * Kd) * dt;
         boat.theta += boat.omega * dt;
 
-        // Unified Physics
+        // Unified NACA 0012 Physics
         let tFx = 0, tFy = 0;
         boat.sails.forEach(s => {
             let relW = (trueWind.angle + Math.PI) - boat.theta;
             while(relW > Math.PI) relW -= 2*Math.PI; while(relW < -Math.PI) relW += 2*Math.PI;
             let side = Math.sign(Math.sin(relW)), aoa = 0.22;
             s.a = relW + (side * aoa);
-            let c = getCoeffs(aoa), q = 0.5 * AIR_DENSITY * Math.pow(trueWind.speed, 2) * 5.0;
+            let c = getCoeffs(aoa), q = 0.5 * AIR_DENSITY * Math.pow(trueWind.speed, 2) * 5.8;
             tFx += (c.cl * Math.sin(aoa) - c.cd * Math.cos(aoa)) * q;
             tFy += (c.cl * Math.cos(aoa) + c.cd * Math.sin(aoa)) * side * q;
             document.getElementById('cl-val').innerText = c.cl.toFixed(1);
+            document.getElementById('cd-val').innerText = c.cd.toFixed(2);
         });
 
         let vF = boat.vx*Math.cos(boat.theta) + boat.vy*Math.sin(boat.theta);
         let vL = -boat.vx*Math.sin(boat.theta) + boat.vy*Math.cos(boat.theta);
         let hAOA = -Math.atan2(vL, vF || 0.001);
         let hc = getCoeffs(hAOA), hq = 0.5 * WATER_DENSITY * (vF*vF + vL*vL) * 0.18;
-        vF += (tFx - (hc.cd*Math.cos(hAOA)-hc.cl*Math.sin(hAOA))*hq - Math.abs(vF)*0.2) * dt;
+        
+        vF += (tFx - (hc.cd*Math.cos(hAOA)-hc.cl*Math.sin(hAOA))*hq - Math.abs(vF)*0.25) * dt;
         vL += (tFy + (hc.cl*Math.cos(hAOA)+hc.cd*Math.sin(hAOA))*hq) * dt;
-        vF *= 0.99; vL *= 0.92;
+        vF *= 0.992; vL *= 0.93;
         boat.vx = vF*Math.cos(boat.theta) - vL*Math.sin(boat.theta);
         boat.vy = vF*Math.sin(boat.theta) + vL*Math.cos(boat.theta);
         boat.x += boat.vx; boat.y += boat.vy;
@@ -140,34 +143,56 @@ window.onload = function() {
         document.getElementById('spd-val').innerText = (vF/KNOTS_TO_FTS).toFixed(1);
         document.getElementById('h-aoa').innerText = (hAOA*180/Math.PI).toFixed(1);
         document.getElementById('hcl-val').innerText = hc.cl.toFixed(1);
+        document.getElementById('cte-val').innerText = Math.round(cte/PX_PER_FT);
 
-        // Draw Logic
-        ctx.fillStyle = "#eee8d5";
-        ctx.fillRect(0,0,canvas.width, canvas.height);
+        // --- DRAWING ---
+        ctx.fillStyle = "#eee8d5"; ctx.fillRect(0,0,canvas.width, canvas.height);
         ctx.save(); ctx.translate(canvas.width/2, canvas.height/2);
         
+        // Grid
+        ctx.strokeStyle = "rgba(0,0,0,0.03)"; ctx.lineWidth = 1;
+        for(let i=-2000; i<2000; i+=100*PX_PER_FT){
+            ctx.beginPath(); ctx.moveTo(i,-2000); ctx.lineTo(i,2000); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(-2000,i); ctx.lineTo(2000,i); ctx.stroke();
+        }
+
+        // Corridors & Wind Arrows
         waypoints.forEach((wp, i) => {
-            ctx.lineWidth = 6; ctx.strokeStyle = (i===currentWP)?"rgba(181,137,0,0.3)":"rgba(88,110,117,0.1)";
-            ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, Math.PI*2); ctx.stroke();
+            let p = waypoints[i===0?waypoints.length-1:i-1];
+            let ang = Math.atan2(wp.y-p.y, wp.x-p.x);
+            // 6px Rails
+            ctx.lineWidth = 6; ctx.strokeStyle = (i===currentWP)?"rgba(181,137,0,0.4)":"rgba(88,110,117,0.08)";
+            ctx.beginPath();
+            ctx.moveTo(p.x + wp.r*Math.cos(ang+1.57), p.y + wp.r*Math.sin(ang+1.57));
+            ctx.lineTo(wp.x + wp.r*Math.cos(ang+1.57), wp.y + wp.r*Math.sin(ang+1.57));
+            ctx.moveTo(p.x + wp.r*Math.cos(ang-1.57), p.y + wp.r*Math.sin(ang-1.57));
+            ctx.lineTo(wp.x + wp.r*Math.cos(ang-1.57), wp.y + wp.r*Math.sin(ang-1.57));
+            ctx.stroke();
+            // Circle
+            ctx.lineWidth = 2; ctx.strokeStyle = (i===currentWP)?"#b58900":"#93a1a1";
+            ctx.beginPath(); ctx.arc(wp.x, wp.y, wp.r, 0, 7); ctx.stroke();
+            // Wind Arrow
+            ctx.save(); ctx.translate(wp.x, wp.y); ctx.rotate(trueWind.angle);
+            ctx.strokeStyle = "#859900"; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(0,-20); ctx.lineTo(0,20); ctx.lineTo(-6,10); ctx.moveTo(0,20); ctx.lineTo(6,10); ctx.stroke();
+            ctx.restore();
         });
 
-        ctx.fillStyle="#268bd2"; ctx.beginPath(); ctx.arc(lastT.x, lastT.y, 6, 0, Math.PI*2); ctx.fill();
+        // Target & Boat
+        ctx.fillStyle="#268bd2"; ctx.beginPath(); ctx.arc(lastT.x, lastT.y, 8, 0, 7); ctx.fill();
         ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.theta);
         ctx.strokeStyle="#073642"; ctx.lineWidth=3; ctx.strokeRect(-15,-10,30,20);
         ctx.fillStyle="#dc322f"; ctx.fillRect(10,-4,8,8);
         boat.sails.forEach(s => {
             ctx.save(); ctx.translate(s.x, 0); ctx.rotate(s.a);
-            ctx.fillStyle="#2aa198"; ctx.fillRect(-12,-2,24,4);
+            ctx.fillStyle="#2aa198"; ctx.fillRect(-14,-2.5,28,5);
+            ctx.fillStyle="#dc322f"; ctx.beginPath(); ctx.arc(14,0,3.5,0,7); ctx.fill();
             ctx.restore();
         });
         ctx.restore(); ctx.restore();
-        
         requestAnimationFrame(loop);
     }
-
     window.onresize = resize;
-    resize();
-    loop();
+    resize(); loop();
 };
 </script>
 </body>
